@@ -1,11 +1,7 @@
 import numpy as np
 
 class MPC:
-    """
-    MPC minimal horizon=1 (équivalent PD/LQR) :
-    a_des = Kp*(p_ref - p) + Kd*(v_ref - v)
-    Puis u = m*(a_des - g) pour compenser la gravité.
-    """
+
     def __init__(self, dt: float, kp: float = 4.0, kd: float = 2.5, a_limit: float = 8.0):
         self.dt = float(dt)
         self.kp = float(kp)
