@@ -1,27 +1,60 @@
 import numpy as np
-from dynamics.Dynamics import Dynamics
-from dynamics.MPC import MPC
+import matplotlib.pyplot as plt
+from entites.drone import Drone
 
-if __name__ == "__main__":
-    # --- Démo single agent ---
-    dt = 0.02
-    sys =Dynamics(mass = 1.5, dt = dt)
-    sys.reset(p=(0, 0, 0.2), v=(0, 0, 0))
+# --- Paramètres de Simulation ---
+SIM_DURATION_S = 10.0   # Durée de la simulation en secondes
+SIM_DT_S = 0.01         # Pas de temps (100 Hz)
+NUM_STEPS = int(SIM_DURATION_S / SIM_DT_S)
 
-    mpc = MPC(dt=dt, kp=4.0, kd=2.5, a_limit=8.0)
+# --- Initialisation ---
+print("Initialisation de la simulation...")
+# Crée un drone à la position [0, 0, 0]
+drone1 = Drone(identifier="drone_01", initial_pos=np.array([0.0, 0.0, 0.0]), dt=SIM_DT_S)
 
-    p_ref = np.array([5.0, 2.0, 1.0])   # objectif simple
-    v_ref = np.zeros(3)
+# Définit un objectif : aller à (x=5, y=5, z=2) et y rester
+target_pos = np.array([5.0, 5.0, 2.0])
+drone1.set_target(target_pos)
 
-    T = 20.0
-    steps = int(T / dt)
-    traj = np.zeros((steps, 6))
+# --- Pour stocker les données (votre futur "dataset") ---
+log_p_true = []
+log_p_measured = []
+log_p_target = []
 
-    for k in range(steps):
-        a_des = mpc.control(sys.p, sys.v, p_ref, v_ref)      # accélération désirée
-        u = sys.m * (a_des - sys.g)                          # force monde (compensation gravité)
-        p, v = sys.step(u)
-        traj[k, :3] = p
-        traj[k, 3:] = v
+print(f"Lancement de la simulation ({NUM_STEPS} pas)...")
 
-    print("Position finale:", traj[-1, :3])
+# --- Boucle de Simulation Principale ---
+for step in range(NUM_STEPS):
+    
+    # Met à jour l'état du drone (Mesure -> Contrôle -> Physique)
+    p_true, v_true, p_measured, accel = drone1.update_state()
+    
+    # Enregistre les données
+    log_p_true.append(p_true)
+    log_p_measured.append(p_measured)
+    log_p_target.append(target_pos)
+    
+    # (Optionnel) Changer la cible à mi-chemin
+    if step == NUM_STEPS // 2:
+        print("Changement de cible !")
+        target_pos = np.array([-5.0, 0.0, 3.0])
+        drone1.set_target(target_pos)
+
+print("Simulation terminée.")
+
+# --- Analyse simple ---
+log_p_true = np.array(log_p_true)
+log_p_measured = np.array(log_p_measured)
+log_p_target = np.array(log_p_target)
+
+# Afficher les trajectoires (exemple pour X)
+plt.figure()
+plt.title("Trajectoire sur l'axe X")
+plt.plot(log_p_true[:, 0], label="Position Réelle (X)")
+plt.plot(log_p_measured[:, 0], 'x', markersize=2, label="Position Mesurée (X)")
+plt.plot(log_p_target[:, 0], '--', label="Cible (X)")
+plt.xlabel("Pas de temps")
+plt.ylabel("Position (m)")
+plt.legend()
+plt.grid(True)
+plt.show()
