@@ -1,4 +1,4 @@
-class Agent:
+class Entites:
 
     def __init__(self, identifier):
         self.identifier = identifier

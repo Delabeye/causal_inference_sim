@@ -8,7 +8,7 @@ class Sensor:
         raise NotImplementedError("The 'measure' method must be implemented by the subclass")
 
 
-class GNSSSensor(Sensor):
+class GNSS_Sensor(Sensor):
     def __init__(self, 
                  position_noise_std: float , 
                  velocity_noise_std: float  
