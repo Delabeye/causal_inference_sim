@@ -10,7 +10,7 @@ class World:
         self.p = p
         self.physics_client_id = physics_client_id
         # CORRECTION : Initialisé comme une liste vide
-        self.obstacle_ids =
+        self.obstacle_ids = []
 
     def load_basic_environment(self):
         """Charge le plan de base et définit la physique par défaut."""
@@ -22,7 +22,7 @@ class World:
         self.p.setRealTimeSimulation(0, physicsClientId=self.physics_client_id) # Pas manuel
         
         # CORRECTION : Syntaxe corrigée (ajout de la position de base )
-        self.p.loadURDF("plane.urdf", , useFixedBase=1, 
+        self.p.loadURDF("plane.urdf",useFixedBase=1, 
                           physicsClientId=self.physics_client_id)
         
     # --- MÉTHODES AJOUTÉES POUR LES OBSTACLES PHYSIQUES ---
@@ -126,6 +126,6 @@ class World:
             baseVisualShapeIndex=visual_shape_id,
             basePosition=cylindrical_obstacle.center,
             physicsClientId=self.physics_client_id
-        ) [[5]This is based on the PyBullet documentation and examples for creating static (baseMass=0) objects [2, 3, 4, 5] and shape primitives.[2, 6, 7]
+        ) 
         self.obstacle_ids.append(body_id)
         return body_id
