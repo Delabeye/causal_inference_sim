@@ -1,60 +1,21 @@
 import pybullet as p
 import numpy as np
-from.agent import Agent # L'import vient de.agent_base
+from entites import Agent # L'import vient de.agent_base
+import utilities.config as config
 
 # Importer vos définitions de capteurs 
 from entites.sensor import GPSSensor
 
 # --- PLACEHOLDERS POUR L'ÉTAPE 3 (maintenant ils lisent la config) ---
 class PlaceholderKalmanFilter:
-    """Stub pour le filtre de Kalman de l'Étape 3."""
-    def __init__(self):
-        self.x = np.zeros(6) # [pos, vel]
-    def predict(self): 
-        pass
-    def update(self, z): self.x = np.array()
-
-class PlaceholderPIDController:
-    """Stub pour le contrôleur PID de l'Étape 3."""
-    def __init__(self, Kp, Ki, Kd, output_min, output_max, windup):
-        
-        self.Kp = Kp # N/m
-        self.Ki = Ki # N/(m·s)
-        self.Kd = Kd # N·s/m
-        self.I = 0.0
-        self.P = 0.0
-        self.D = 0.0    
-        self.prev_error = 0.0
-
-        # Anti-windup limits
-        self.output_min = output_min
-        self.output_max = output_max
-        self.windup = windup
-    
-    def compute(self, error, dt):
-        self.P = self.Kp * error
-        
-        self.I += self.Ki * error * dt
-        self.windup_guard()
-
-        self.D = self.Kd * (error / dt) 
-
-        Output = self.P + self.I + self.D
-
-        return Output
-    
-    def windup_guard(self):
-
-        if self.windup != 0:
-            if self.I > self.output_max:
-                self.I = self.output_max
-            elif self.I < -self.output_min:
-                self.I = -self.output_min
-
+    def __init__(self, config):
+        self.x = np.zeros(6)
+        self.process_noise = config['process_noise'] # Lit depuis la config
+    def predict(self): pass
+    def update(self, z): self.x = np.array(z, z[1], z[2])
 
 
 # --- FIN DES PLACEHOLDERS ---
-
 
 class UAV(Agent):
     """
