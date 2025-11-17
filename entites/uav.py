@@ -1,6 +1,6 @@
 import pybullet as p
 import numpy as np
-from entites import Agent # L'import vient de.agent_base
+from entites import agent # L'import vient de.agent_base
 import utilities.config as config
 from Control.PID import PlaceholderPIDController
 
@@ -18,7 +18,7 @@ class PlaceholderKalmanFilter:
 
 # --- FIN DES PLACEHOLDERS ---
 
-class UAV(Agent):
+class UAV(agent):
     """
     Implémentation d'un agent UAV.
     Tous ses paramètres sont lus depuis son objet 'config'.
