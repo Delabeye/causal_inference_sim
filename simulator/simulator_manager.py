@@ -1,131 +1,115 @@
 import pybullet as p
 import pybullet_data
-import entites.obstacles as obs # Nécessaire pour les types d'obstacles 
+import time
+import numpy as np
 
-# Les imports pour 'drone' et 'sensor' sont supprimés car cette
-# classe ne doit pas être responsable de leur création.
+from environment.world import World
+from entites.uav import UAV
+# Importer les définitions d'obstacles 
+from entites.obstacles import CubeObstacle, SphericalObstacle, CylindricalObstacle
 
-class World:
-    def __init__(self, physics_client_id):
-        self.p = p
-        self.physics_client_id = physics_client_id
-        # CORRECTION : Initialisé comme une liste vide
-        self.obstacle_ids = []
-
-    def load_basic_environment(self):
-        """Charge le plan de base et définit la physique par défaut."""
-        self.p.setAdditionalSearchPath(pybullet_data.getDataPath(), 
-                                         physicsClientId=self.physics_client_id)
+class SimulationManager:
+    """
+    Classe centrale d'orchestration.
+    Construit et exécute la simulation en se basant sur un objet config.
+    """
+    def __init__(self, config):
+        self.config = config
+        self.dt = self.config['simulation']['dt']
         
-        # Définir la gravité et le pas de temps
-        self.p.setGravity(0, 0, -9.81, physicsClientId=self.physics_client_id)
-        self.p.setRealTimeSimulation(0, physicsClientId=self.physics_client_id) # Pas manuel
-        
-        # CORRECTION : Syntaxe corrigée (ajout de la position de base )
-        self.p.loadURDF("plane.urdf",useFixedBase=1, 
-                          physicsClientId=self.physics_client_id)
-        
-    # --- MÉTHODES AJOUTÉES POUR LES OBSTACLES PHYSIQUES ---
+        # 1. Connexion à PyBullet (paramétrée)
+        mode = p.GUI if self.config['simulation']['connect_mode'] == 'gui' else p.DIRECT
+        self.physics_client_id = p.connect(mode)
+        if self.physics_client_id < 0:
+            raise ConnectionError("N'a pas pu se connecter au client PyBullet.")
+            
+        print(f"Connecté au client PyBullet avec l'ID: {self.physics_client_id}")
 
-    def add_cube_obstacle(self, cube_obstacle: obs.CubeObstacle):
+        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        p.setGravity(*self.config['physics']['gravity']) # Paramétré
+        
+        self.agents = []
+        self.setpoints = {}
+        
+        # 2. Initialiser l'environnement
+        self.world = World(self.physics_client_id)
+        self.world.load_basic_environment()
+        
+        # 3. Charger le Scénario (lit la config)
+        self.load_scenario()
+
+    def load_scenario(self):
         """
-        Crée un objet physique statique à partir d'une définition CubeObstacle.
-        Utilise p.GEOM_BOX, qui nécessite 'halfExtents' (demi-étendues).[2, 6, 7]
+        Charge les agents et les obstacles en lisant l'objet config.
         """
-        half_extents = [cube_obstacle.length / 2, 
-                        cube_obstacle.width / 2, 
-                        cube_obstacle.height / 2]
+        print("Chargement du scénario depuis la configuration...")
         
-        # 1. Créer la forme de collision
-        collision_shape_id = self.p.createCollisionShape(
-            shapeType=self.p.GEOM_BOX,
-            halfExtents=half_extents,
-            physicsClientId=self.physics_client_id
-        ) [2, 6, 5, 7, 8, 9]
+        # --- Charger les Obstacles depuis la config ---
+        for obs_config in self.config['world']['obstacles']:
+            if obs_config['type'] == 'cube':
+                obstacle = CubeObstacle(center=obs_config['center'],
+                                        length=obs_config['length'],
+                                        width=obs_config['width'],
+                                        height=obs_config['height'])
+                self.world.add_cube_obstacle(obstacle)
+            
+            elif obs_config['type'] == 'sphere':
+                obstacle = SphericalObstacle(center=obs_config['center'],
+                                             radius=obs_config['radius'])
+                self.world.add_sphere_obstacle(obstacle)
+            
+            elif obs_config['type'] == 'cylinder':
+                obstacle = CylindricalObstacle(center=obs_config['center'],
+                                               radius=obs_config['radius'],
+                                               height=obs_config['height'])
+                self.world.add_cylindrical_obstacle(obstacle)
         
-        # 2. Créer la forme visuelle (peut être la même)
-        visual_shape_id = self.p.createVisualShape(
-            shapeType=self.p.GEOM_BOX,
-            halfExtents=half_extents,
-            rgbaColor=[0.6, 0.6, 0.6, 1.0], # Couleur grise
-            physicsClientId=self.physics_client_id
-        )
+        # --- Charger les Agents depuis la config ---
+        for agent_config in self.config['agents']:
+            if agent_config['type'] == 'uav':
+                
+                start_orn_q = p.getQuaternionFromEuler(agent_config['start_orn_euler'])
+                
+                # Crée l'agent en lui passant son propre bloc de config
+                agent = UAV(
+                    config=agent_config, # Passe tout le bloc de config de l'agent
+                    physics_client_id=self.physics_client_id,
+                    dt=self.dt
+                ) [2, 3, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+                
+                self.agents.append(agent)
+                self.setpoints[agent.bodyId] = np.array(agent_config['setpoint'])
+                
+            # elif agent_config['type'] == 'ugv':
+            #     # agent = UGV(config=agent_config,...)
+            #     pass
 
-        # 3. Créer le corps (MultiBody)
-        # baseMass=0 rend l'objet statique 
-        body_id = self.p.createMultiBody(
-            baseMass=0, # STATIQUE
-            baseCollisionShapeIndex=collision_shape_id,
-            baseVisualShapeIndex=visual_shape_id,
-            basePosition=cube_obstacle.center,
-            physicsClientId=self.physics_client_id
-        ) [2, 3, 4, 5]
-        self.obstacle_ids.append(body_id)
-        return body_id
+        print(f"Scénario chargé : {len(self.agents)} agents, {len(self.world.obstacle_ids)} obstacles.")
 
-    def add_sphere_obstacle(self, sphere_obstacle: obs.SphericalObstacle):
+    def run(self):
         """
-        Crée un objet physique statique à partir d'une définition SphericalObstacle.
-        Utilise p.GEOM_SPHERE.[2, 6, 5, 7]
+        Exécute la boucle de simulation principale.
         """
-        # 1. Créer la forme de collision
-        collision_shape_id = self.p.createCollisionShape(
-            shapeType=self.p.GEOM_SPHERE,
-            radius=sphere_obstacle.radius,
-            physicsClientId=self.physics_client_id
-        ) [2, 6, 5, 7, 8, 9, 10, 11, 12]
+        sim_time = 0.0
+        max_time = self.config['simulation']['max_sim_time']
         
-        # 2. Créer la forme visuelle
-        visual_shape_id = self.p.createVisualShape(
-            shapeType=self.p.GEOM_SPHERE,
-            radius=sphere_obstacle.radius,
-            rgbaColor=[0.6, 0.6, 0.6, 1.0],
-            physicsClientId=self.physics_client_id
-        )
+        while sim_time < max_time:
+            
+            # 1. Penser (Think) [Image 1]
+            for agent in self.agents:
+                setpoint = self.setpoints.get(agent.bodyId, np.zeros(3))
+                agent.think_and_act(setpoint)
 
-        # 3. Créer le corps (MultiBody)
-        body_id = self.p.createMultiBody(
-            baseMass=0, # STATIQUE 
-            baseCollisionShapeIndex=collision_shape_id,
-            baseVisualShapeIndex=visual_shape_id,
-            basePosition=sphere_obstacle.center,
-            physicsClientId=self.physics_client_id
-        ) [2, 3, 4, 5]
-        self.obstacle_ids.append(body_id)
-        return body_id
+            # 2. Agir (Act) 
+            p.stepSimulation(physicsClientId=self.physics_client_id)
 
-    def add_cylindrical_obstacle(self, cylindrical_obstacle: obs.CylindricalObstacle):
-        """
-        Crée un objet physique statique à partir d'une définition CylindricalObstacle.
-        Utilise p.GEOM_CYLINDER. [2, 6, 7]
-        """
-        radius = cylindrical_obstacle.radius
-        height = cylindrical_obstacle.height
-        
-        # 1. Créer la forme de collision
-        collision_shape_id = self.p.createCollisionShape(
-            shapeType=self.p.GEOM_CYLINDER,
-            radius=radius,
-            height=height, # PyBullet utilise 'height' ou 'length' [2, 6, 7]
-            physicsClientId=self.physics_client_id
-        )
-        
-        # 2. Créer la forme visuelle
-        visual_shape_id = self.p.createVisualShape(
-            shapeType=self.p.GEOM_CYLINDER,
-            radius=radius,
-            length=height, # La forme visuelle utilise 'length'
-            rgbaColor=[0.6, 0.6, 0.6, 1.0],
-            physicsClientId=self.physics_client_id
-        )
+            # 3. Log (Étape 5)
+            # self.logger.log_tick(sim_time, self.agents)
 
-        # 3. Créer le corps (MultiBody)
-        body_id = self.p.createMultiBody(
-            baseMass=0, # STATIQUE 
-            baseCollisionShapeIndex=collision_shape_id,
-            baseVisualShapeIndex=visual_shape_id,
-            basePosition=cylindrical_obstacle.center,
-            physicsClientId=self.physics_client_id
-        ) 
-        self.obstacle_ids.append(body_id)
-        return body_id
+            time.sleep(self.dt)
+            sim_time += self.dt
+                
+    def stop(self):
+        if p.isConnected(self.physics_client_id):
+            print("Déconnexion de PyBullet.")
+            p.disconnect(physicsClientId=self.physics_client_id)
