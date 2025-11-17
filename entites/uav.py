@@ -2,6 +2,7 @@ import pybullet as p
 import numpy as np
 from entites import Agent # L'import vient de.agent_base
 import utilities.config as config
+from Control.PID import PlaceholderPIDController
 
 # Importer vos définitions de capteurs 
 from entites.sensor import GPSSensor
