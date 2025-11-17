@@ -1,28 +1,19 @@
+import yaml
 
-Sim_duration = 1000  # in second
-Time_step = 0.1  # in second
-
-Num_GNSS_sensors = 0  # number of GNSS sensors in the simulation
-GNSS_position_noise_std = []  # list of float in meter
-GNSS_velocity_noise_std = []  # list of float in meter/second
-
-Num_drones = 0 # number of drones in the simulation
-Drone_coords = []  # list of tuples (x, y, z) in meter
-Drone_angles = []  # list of tuples (roll, pitch, yaw) in radian
-Drone_speeds = []  # list of float in meter/second
-Drone_mass = []  # list of float in kg
-Drone_drag_coefficient = []  # list of float dimensionless
-Max_drone_speed = []  # list of float in meter/second
-Max_drone_acceleration = []  # list of float in meter/second^2
-Sensors=[]  # list of tuples of sensor objects assigned to each drone
-
-World_size = (100.0, 100.0, 20.0)  # in meter
-
-Num_obstacles = 10
-
-
-
-
-
-
-
+def load_config(config_path='config.yaml'):
+    """
+    Charge le fichier de configuration YAML.
+    """
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        print(f"Configuration chargée depuis {config_path}")
+        return config
+    except FileNotFoundError:
+        print(f"ERREUR : Fichier de configuration '{config_path}' non trouvé.")
+        return None
+    except yaml.YAMLError as e:
+        print(f"ERREUR : Erreur lors de l'analyse du YAML : {e}")
+        return None
+    
+    

@@ -12,7 +12,7 @@ class MPC:
         if v_ref is None:
             v_ref = np.zeros(3)
         a = self.kp * (p_ref - p) + self.kd * (v_ref - v)
-        # saturation sur la norme d'accélération
+        
         n = np.linalg.norm(a)
         if n > self.a_limit:
             a = a * (self.a_limit / (n + 1e-9))
