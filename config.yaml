@@ -75,7 +75,8 @@ agents:
       # Paramètres pour 'controller' [Image 1]
       controller_z:
         type: 'pid'
-        gains: {Kp: 0.5, Ki: 0.0, Kd: 0.1}
+        gains: {Kp: 0.5, Ki: 0.0, Kd: 0.1, }
+        windup: 1
 
   # --- Définition d'un deuxième agent (exemple) ---
   # - type: 'uav'
