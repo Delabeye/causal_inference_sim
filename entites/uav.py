@@ -12,16 +12,49 @@ class PlaceholderKalmanFilter:
     """Stub pour le filtre de Kalman de l'Étape 3."""
     def __init__(self):
         self.x = np.zeros(6) # [pos, vel]
-    def predict(self): pass
+    def predict(self): 
+        pass
     def update(self, z): self.x = np.array()
 
 class PlaceholderPIDController:
     """Stub pour le contrôleur PID de l'Étape 3."""
-    def __init__(self, Kp, Ki, Kd):
-        self.Kp, self.Ki, self.Kd = Kp, Ki, Kd
+    def __init__(self, Kp, Ki, Kd, output_min, output_max, windup):
+        
+        self.Kp = Kp # N/m
+        self.Ki = Ki # N/(m·s)
+        self.Kd = Kd # N·s/m
+        self.I = 0.0
+        self.P = 0.0
+        self.D = 0.0    
+        self.prev_error = 0.0
+
+        # Anti-windup limits
+        self.output_min = output_min
+        self.output_max = output_max
+        self.windup = windup
+    
     def compute(self, error, dt):
-        # Un simple contrôleur P pour cet exemple
-        return self.Kp * error
+        self.P = self.Kp * error
+        
+        self.I += self.Ki * error * dt
+        self.windup_guard()
+
+        self.D = self.Kd * (error / dt) 
+
+        Output = self.P + self.I + self.D
+
+        return Output
+    
+    def windup_guard(self):
+
+        if self.windup != 0:
+            if self.I > self.output_max:
+                self.I = self.output_max
+            elif self.I < -self.output_min:
+                self.I = -self.output_min
+
+
+
 # --- FIN DES PLACEHOLDERS ---
 
 
@@ -31,7 +64,7 @@ class UAV(Agent):
     Cette classe REMPLACE votre ancienne classe Drone.
     """
     def __init__(self, urdf_path, start_pos, start_orn_q, 
-                 physics_client_id, dt):
+                 physics_client_id, dt, mass):
         
         super().__init__(urdf_path, start_pos, start_orn_q, 
                          physics_client_id, dt)
@@ -40,7 +73,7 @@ class UAV(Agent):
         # Basé sur gym-pybullet-drones [7, 16, 3]
         self.thrust_coeff = 2.2e-8  # N / (RPM^2)
         self.max_rpm = 25000
-        self.mass = 0.027 # Masse (kg) - À AJUSTER
+        self.mass = mass # Masse (kg) - À AJUSTER
         
         # Gravité pour la compensation (hover)
         self.g = 9.81
@@ -57,12 +90,12 @@ class UAV(Agent):
             
         self.last_rpms = np.zeros(4)
 
-    def _initialize_components(self):
+    def _initialize_components(self, position_noise_std, velocity_noise_std, Kp, Ki, Kd):
         """Surcharge pour créer les composants réels de l'UAV."""
         
         # 1. Capteur (de votre code existant )
-        self.components['gps'] = GPSSensor(position_noise_std=0.05, 
-                                           velocity_noise_std=0.02)
+        self.components['gps'] = GPSSensor(position_noise_std, 
+                                           velocity_noise_std)
         
         # 2. Estimateur (Filtre - bloc 'sensor filter' de [4])
         # TODO: Remplacer par la vraie classe KalmanFilter de l'Étape 3
@@ -71,9 +104,9 @@ class UAV(Agent):
         # 3. Contrôleur (bloc 'controller' de [4])
         # TODO: Remplacer par la vraie classe PIDController de l'Étape 3
         # Nous créons un contrôleur P-I-D juste pour l'altitude (axe Z)
-        self.components['pid_z'] = PlaceholderPIDController(Kp=0.5, Ki=0.0, Kd=0.1)
+        self.components['pid_z'] = PlaceholderPIDController(Kp, Ki, Kd)
         
-        print("Composants de l'UAV initialisés (GPS, Estimateur Stub, PID Stub).")
+        print(f"Composants de l'UAV {self.identifier} initialisés (GPS, Estimateur Stub, PID Stub).")
 
 
     def think_and_act(self, setpoint):
@@ -105,6 +138,7 @@ class UAV(Agent):
         # Calculer la commande (PID)
         pid_z = self.components['pid_z']
         # La sortie est une "force" de correction
+        # Un simple contrôleur P pour cet exemple
         correction_force = pid_z.compute(error_z, self.dt)
         
         # Convertir la force en RPM pour les 4 moteurs
