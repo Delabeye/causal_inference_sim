@@ -15,5 +15,3 @@ def load_config(config_path='config.yaml'):
     except yaml.YAMLError as e:
         print(f"ERREUR : Erreur lors de l'analyse du YAML : {e}")
         return None
-    
-    
