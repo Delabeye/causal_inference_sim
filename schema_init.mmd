@@ -1,0 +1,55 @@
+flowchart TB
+
+    %% ==============================
+    %% SECTION 1 : INITIALIZATION FLOW
+    %% ==============================
+
+    %% Main nodes
+    cfg["📄 config.yaml\n(User control panel)"]
+    main["🐍 main.py\n(Starter)"]
+    cfg_loader["🐍 utilities/config_loader.py\n(ConfigLoader)"]
+    sim_mgr["🐍 simulator/simulation_manager.py\n(SimulationManager – Orchestrator)"]
+    world["🐍 environment/world.py\n(World builder)"]
+    uav["🐍 entities/uav.py\n(UAV agent)"]
+    pyb["⚙️ PyBullet Engine\n(Physical world)"]
+    dyn_obsolete["❌ Dynamics/dynamics.py\nOBSOLETE: Replaced by p.stepSimulation()"]
+
+    %% Folder groups
+    subgraph "utilities/"
+        cfg_loader
+    end
+
+    subgraph "simulator/"
+        sim_mgr
+    end
+
+    subgraph "environment/"
+        world
+    end
+
+    subgraph "entities/"
+        uav
+    end
+
+    %% Initialization flow (top to bottom)
+    cfg -->|"read by"| main
+    main -->|"uses to parse YAML"| cfg_loader
+    main -->|"Creates and passes config to"| sim_mgr
+
+    sim_mgr -->|"Builds scenario: world"| world
+    sim_mgr -->|"Builds scenario: agents"| uav
+
+    world -->|"Builds static obstacles\n(p.createMultiBody)"| pyb
+    uav -->|"Loads UAV body\n(p.loadURDF)"| pyb
+
+    %% Obsolete dynamics class
+    dyn_obsolete -.->|"Old custom dynamics implementation"| sim_mgr
+
+    %% (Optional) styling
+    classDef initNode fill:#E1F0FF,stroke:#4A90E2,stroke-width:2px,color:#000;
+    classDef engineNode fill:#FFFFFF,stroke:#4A90E2,stroke-width:3px,color:#000;
+    classDef obsoleteNode fill:#FDE2E2,stroke:#D0021B,stroke-width:2px,color:#000;
+
+    class cfg,main,cfg_loader,sim_mgr,world,uav initNode;
+    class pyb engineNode;
+    class dyn_obsolete obsoleteNode;

@@ -1,0 +1,64 @@
+flowchart LR
+
+    %% ===========================================
+    %% SECTION 2 : MAIN REAL-TIME SIMULATION LOOP
+    %% ===========================================
+
+    %% Main loop nodes
+    sim_mgr_loop["🐍 simulator/simulation_manager.py\nSimulationManager.run() – main loop"]
+    uav_brain["🧠🐍 entities/uav.py\nthink_and_act() – agent brain"]
+    pyb["⚙️ PyBullet Engine\n(Physical world)"]
+
+    %% Folder groups
+    subgraph "simulator/"
+        sim_mgr_loop
+    end
+
+    subgraph "entities/"
+        uav_brain
+        gps["🐍 entities/sensor.py\nGPSSensor"]
+    end
+
+    subgraph "components/"
+        kf["🧠 components/estimators.py\nKalmanFilter Stub"]
+        pid["🧠 components/controllers.py\nPIDController Stub"]
+    end
+
+    %% Loop steps (Think / Act / Repeat)
+    sim_mgr_loop -->|"1. Think: calls think_and_act()"| uav_brain
+    sim_mgr_loop -->|"2. Act: p.stepSimulation()"| pyb
+    pyb -->|"3. Repeat: next loop (time += dt)"| sim_mgr_loop
+
+    %% Control loop inside UAV brain (think_and_act)
+    setpoint["Setpoint (desired state)"]
+    sum((⊕ Summation))
+
+    %% A: Setpoint to summation
+    setpoint -->|"A. Setpoint"| sum
+
+    %% B: True state from PyBullet to sensor
+    pyb -->|"B. True state\n(p.getBasePosition...)"| gps
+
+    %% C: Noisy measurement to filter
+    gps -->|"C. Noisy measurement"| kf
+
+    %% D: Estimated state back to summation
+    kf -->|"D. Estimated state"| sum
+
+    %% E: Error to PID controller
+    sum -->|"E. Error"| pid
+
+    %% F: Command from PID to UAV brain
+    pid -->|"F. Command (e.g., RPMs)"| uav_brain
+
+    %% G: Command becomes applied force in PyBullet
+    uav_brain -->|"G. Apply force\n(p.applyExternalForce)"| pyb
+
+    %% (Optional) styling
+    classDef loopNode fill:#E3F9E5,stroke:#1E8E3E,stroke-width:2px,color:#000;
+    classDef engineNode fill:#FFFFFF,stroke:#1E8E3E,stroke-width:3px,color:#000;
+    classDef logicNode fill:#F5FFF7,stroke:#1E8E3E,stroke-width:1.5px,color:#000;
+
+    class sim_mgr_loop,uav_brain,gps,kf,pid loopNode;
+    class setpoint,sum logicNode;
+    class pyb engineNode;
