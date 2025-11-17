@@ -6,8 +6,8 @@ class Dynamics:
         self.m = float(mass)
         self.dt = float(dt)
         self.g = np.array(g, dtype=float)
-        self.p = np.zeros(3)  # position
-        self.v = np.zeros(3)  # vitesse
+        self.p = np.zeros(3)  
+        self.v = np.zeros(3) 
 
     def reset(self, p=(0, 0, 0.2), v=(0, 0, 0)):
         self.p = np.array(p, dtype=float)
