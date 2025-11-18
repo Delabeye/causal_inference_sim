@@ -17,19 +17,25 @@ physics:
 #==================================================================
 # DÉFINITIONS DU MONDE
 #==================================================================
+#==================================================================
+# DEFINITIONS DU MONDE
+#==================================================================
 world:
   # Liste de tous les obstacles statiques
   obstacles:
+    # CORRECTION : Ajout d'un tiret '-' pour en faire un élément de liste
     - type: 'cube'
       center: [2, 0, 0.5]
       length: 1
       width: 1
       height: 1
       
+    # CORRECTION : Ajout d'un tiret '-'
     - type: 'sphere'
       center: [-2, 1, 1]
       radius: 0.5
       
+    # CORRECTION : Ajout d'un tiret '-'
     - type: 'cylinder'
       center: [0, 3, 1.5]
       radius: 0.25

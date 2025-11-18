@@ -103,18 +103,16 @@ class UAV(Agent):
         self.apply_physics(self.last_rpms)
 
     def apply_physics(self, rpms):
-        """
-        Applique les forces de poussée (thrust) aux liens moteurs dans PyBullet.
-        """
+
         for i, motor_link_index in enumerate(self.motor_link_indices):
-            
             thrust = self.thrust_coeff * (rpms[i]**2)
-            
-            self.p.applyExternalForce(
+        
+        # CORRECTION : Remplissage des champs vides
+            self.p.applyExternalForce (
                 objectUniqueId=self.bodyId,
                 linkIndex=motor_link_index,
-                forceObj='',
-                posObj='',
-                flags=self.p.LINK_FRAME, # Crucial pour le contrôle [20, 23, 8, 24, 9, 13]
+                forceObj=[0, 0, thrust],    # Force dans le repère local
+                posObj='',          # Position au centre du lien
+                flags=self.p.LINK_FRAME, # Crucial pour le contrôle 
                 physicsClientId=self.physics_client_id
-            )
+        )
