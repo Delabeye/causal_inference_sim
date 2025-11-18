@@ -97,12 +97,36 @@ class SimulationManager:
                 self.agents.append(uav)
 
         for objective in self.config.get("objectives", []):
-            agent_id = objective.get("agent_body_id")
-            if objective.get("type") == "reach_setpoint":
+            agent_id = objective.get("agent")
+            if objective.get("type") == "reach_position":
                 if agent_id is None:
-                    raise ValueError("Objective of type 'reach_setpoint' is missing 'agent_body_id'.")
-                setpoint = np.array(objective.get("setpoint", [0.0, 0.0, 0.0]), dtype=float)
-                self.setpoints[agent_id] = setpoint
+                    raise ValueError("Objective of type 'reach_position' is missing 'agent'.")
+                setpoint = np.array(objective.get("target_pos", [0.0, 0.0, 0.0]), dtype=float)
+                # assign target to the matching agent (by index or by name)
+                if isinstance(agent_id, int):
+                    if 0 <= agent_id < len(self.agents):
+                        # prefer the explicit API if available
+                        agent = self.agents[agent_id]
+                        if hasattr(agent, "set_target_position"):
+                            agent.set_target_position(setpoint)
+                        elif hasattr(agent, "set_target"):
+                            agent.set_target(setpoint)
+                        else:
+                            setattr(agent, "target_pos", setpoint)
+                    else:
+                        raise ValueError(f"Agent index {agent_id} out of range for objective.")
+                else:
+                    for agent in self.agents:
+                        if getattr(agent, "name", None) == agent_id:
+                            if hasattr(agent, "set_target_position"):
+                                agent.set_target_position(setpoint)
+                            elif hasattr(agent, "set_target"):
+                                agent.set_target(setpoint)
+                            else:
+                                setattr(agent, "target_pos", setpoint)
+                            break
+                    else:
+                        raise ValueError(f"No agent with name '{agent_id}' found for objective.")
 
         print(
             f"Scénario chargé : {len(self.agents)} drones, "
