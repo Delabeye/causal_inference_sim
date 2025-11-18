@@ -1,6 +1,6 @@
 import pybullet as p
 import numpy as np
-from entites import Agent # L'import vient de.agent_base
+from entites.agent import Agent # L'import vient de.agent_base
 from Control.PID import PIDController
 
 # Importer vos définitions de capteurs 
