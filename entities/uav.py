@@ -2,15 +2,46 @@ import pybullet as p
 import numpy as np
 
 from entities.agent import Agent
-from Control.PID import PIDController
 from entities.sensor import GPSSensor
 
 
+# ----------------------------------------------------------------------
+# PID minimal interne (on n'utilise plus Control.PID)
+# ----------------------------------------------------------------------
+class PIDController:
+    def __init__(self, config: dict):
+        """
+        config:
+          gains: {Kp: ..., Ki: ..., Kd: ...}
+          windup: valeur max de l'intégrale (optionnel)
+        """
+        gains = config.get("gains", {})
+        self.Kp = float(gains.get("Kp", 0.0))
+        self.Ki = float(gains.get("Ki", 0.0))
+        self.Kd = float(gains.get("Kd", 0.0))
+
+        self.integral = 0.0
+        self.prev_error = 0.0
+        self.windup = float(config.get("windup", 0.0))  # 0.0 => pas de clamp
+
+    def compute(self, error: float, dt: float) -> float:
+        # Intégrale
+        self.integral += error * dt
+        if self.windup > 0.0:
+            self.integral = max(-self.windup, min(self.windup, self.integral))
+
+        # Dérivée
+        derivative = (error - self.prev_error) / dt if dt > 0.0 else 0.0
+        self.prev_error = error
+
+        # Sortie PID
+        return self.Kp * error + self.Ki * self.integral + self.Kd * derivative
+
+
+# ----------------------------------------------------------------------
+# Kalman fictif (placeholder)
+# ----------------------------------------------------------------------
 class PlaceholderKalmanFilter:
-    """
-    Faux filtre de Kalman très simple, juste pour que la simu tourne
-    sans planter.
-    """
     def __init__(self, config: dict):
         # état [x, y, z, vx, vy, vz]
         self.x = np.zeros(6, dtype=float)
@@ -30,6 +61,9 @@ class PlaceholderKalmanFilter:
         # vitesses laissées à 0
 
 
+# ----------------------------------------------------------------------
+# UAV (drone)
+# ----------------------------------------------------------------------
 class UAV(Agent):
     """
     Implémentation d'un agent UAV (drone).
@@ -44,7 +78,6 @@ class UAV(Agent):
 
         start_pos = self.config.get("start_pos")
         if start_pos is None:
-            # position par défaut si non définie dans le YAML
             start_pos = [0.0, 0.0, 0.2]
         start_pos = [float(v) for v in start_pos]
 
@@ -73,7 +106,6 @@ class UAV(Agent):
 
         raw_indices = physics_cfg.get("motor_link_indices")
         if raw_indices is None:
-            # pas de moteurs => pas de crash, juste pas de poussée
             self.motor_link_indices = []
         else:
             self.motor_link_indices = list(raw_indices)
@@ -84,10 +116,10 @@ class UAV(Agent):
             -1,
             physicsClientId=self.physics_client_id,
         )
-        mass = dyn[0] if dyn is not None else None  # masse = premier élément
+        mass = dyn[0] if dyn is not None else None
 
         if mass is None or mass <= 0:
-            mass = 0.027  # masse par défaut (ex. petit quadri type Crazyflie)
+            mass = 0.027  # masse par défaut
 
         self.mass = float(mass)
 
@@ -95,10 +127,13 @@ class UAV(Agent):
         self.hover_thrust_per_motor = (self.mass * self.g) / 4.0
         self.hover_rpm = np.sqrt(self.hover_thrust_per_motor / self.thrust_coeff)
 
-        # Dernières consignes moteurs (4 par défaut)
+        # Dernières consignes moteurs
         self.last_rpms = np.zeros(4, dtype=float)
 
-        print(f"UAV '{self.config.get('name', 'unnamed')}' chargé, bodyId={self.bodyId}, masse={self.mass}")
+        print(
+            f"UAV '{self.config.get('name', 'unnamed')}' "
+            f"chargé, bodyId={self.bodyId}, masse={self.mass}"
+        )
 
     # ------------------------------------------------------------------
     # Initialisation des composants (capteurs, estimateurs, contrôleurs)
@@ -122,7 +157,10 @@ class UAV(Agent):
         pid_z_cfg = components_cfg.get("controller_z", {})
         self.components["pid_z"] = PIDController(pid_z_cfg)
 
-        print(f"Composants pour '{self.config.get('name', 'unnamed')}' (ID: {self.bodyId}) initialisés.")
+        print(
+            f"Composants pour '{self.config.get('name', 'unnamed')}' "
+            f"(ID: {self.bodyId}) initialisés."
+        )
 
     # ------------------------------------------------------------------
     # Boucle de décision + action
@@ -132,7 +170,7 @@ class UAV(Agent):
         Exécute la boucle de contrôle en Z pour le drone.
         setpoint : [x, y, z] (on n'utilise ici que z)
         """
-        # 1. Vérité terrain (position & vitesse)
+        # 1. Vérité terrain
         true_state = self.get_ground_truth_state()
         true_pos = true_state["pos"]
         true_vel = true_state["vel"]
@@ -161,7 +199,6 @@ class UAV(Agent):
         target_rpm = np.sqrt(thrust_per_motor / self.thrust_coeff)
         target_rpm = min(target_rpm, self.max_rpm)
 
-        # on crée un tableau rpms de même taille que motor_link_indices (ou 4 par défaut)
         n_motors = len(self.motor_link_indices) if self.motor_link_indices else 4
         self.last_rpms = np.full(n_motors, target_rpm, dtype=float)
 
@@ -176,7 +213,6 @@ class UAV(Agent):
         Applique les forces de poussée (thrust) aux liens moteurs dans PyBullet.
         """
         if not self.motor_link_indices:
-            # Rien à faire si aucun moteur défini
             return
 
         num_joints = p.getNumJoints(self.bodyId, physicsClientId=self.physics_client_id)
@@ -185,13 +221,11 @@ class UAV(Agent):
             if i >= len(rpms):
                 break
 
-            # On vérifie que l'index de lien est valide
             if motor_link_index < 0 or motor_link_index >= num_joints:
                 continue
 
             thrust = self.thrust_coeff * (rpms[i] ** 2)
 
-            # Force vers +Z dans le repère du moteur
             p.applyExternalForce(
                 objectUniqueId=self.bodyId,
                 linkIndex=motor_link_index,
