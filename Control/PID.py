@@ -1,4 +1,4 @@
-class PlaceholderPIDController:
+class PIDController:
     """Stub pour le contrôleur PID de l'Étape 3."""
     def __init__(self, output_min, output_max, config):
         

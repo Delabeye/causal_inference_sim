@@ -1,8 +1,7 @@
 import pybullet as p
 import numpy as np
-from entities import agent # L'import vient de.agent_base
-import utilities.config as config
-from Control.PID import PlaceholderPIDController
+from entities.agent import Agent # L'import vient de.agent_base
+from Control.PID import PIDController
 
 # Importer vos définitions de capteurs 
 from entities.sensor import GPSSensor
@@ -18,7 +17,7 @@ class PlaceholderKalmanFilter:
 
 # --- FIN DES PLACEHOLDERS ---
 
-class UAV(agent):
+class UAV(Agent):
     """
     Implémentation d'un agent UAV.
     Tous ses paramètres sont lus depuis son objet 'config'.
@@ -64,7 +63,7 @@ class UAV(agent):
         self.components['estimator'] = PlaceholderKalmanFilter(components_cfg['estimator'])
         
         # 3. Contrôleur (lit la config 'controller_z') [Image 1]
-        self.components['pid_z'] = PlaceholderPIDController(components_cfg['controller_z'])
+        self.components['pid_z'] = PIDController(components_cfg['controller_z'])
         
         print(f"Composants pour '{self.config['name']}' (ID: {self.bodyId}) initialisés.")
 
@@ -95,7 +94,7 @@ class UAV(agent):
         total_thrust = self.hover_thrust_per_motor * 4 + correction_force
         thrust_per_motor = max(0, total_thrust / 4.0)
         
-        target_rpm = np.sqrt(thrust_per_motor / self.thrust_coeff) [3, 4, 6]
+        target_rpm = np.sqrt(thrust_per_motor / self.thrust_coeff) #[3, 4, 6]
         target_rpm = min(target_rpm, self.max_rpm)
         
         self.last_rpms = np.array([target_rpm] * 4)
