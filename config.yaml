@@ -124,7 +124,7 @@ agents:
         windup: 1.0
 
   - type: "uav"
-    name: "drone_1"
+    name: "drone_2"
     urdf_path: "assets/quadrotor.urdf"
 
     start_pos: [-1.0, 0.0, 0.2]
