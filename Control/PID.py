@@ -1,47 +1,72 @@
+# Control/PID.py
+import math
+
+
 class PIDController:
-    """Contrôleur PID simple pour l'altitude (ou autre)."""
+    """
+    Contrôleur PID basique, paramétré par un bloc de config :
+      gains:
+        Kp: ...
+        Ki: ...
+        Kd: ...
+      windup: valeur non nulle => anti-windup activé
 
-    def __init__(self, output_min, output_max, config):
-        # Gains PID
-        self.Kp = config["gains"]["Kp"]
-        self.Ki = config["gains"]["Ki"]
-        self.Kd = config["gains"]["Kd"]
+    output_min / output_max : bornes pour l'intégrale (anti-windup).
+    """
 
-        # États internes
-        self.I = 0.0
+    def __init__(self, output_min, output_max, config: dict):
+        gains = config.get("gains", {})
+        self.Kp = float(gains.get("Kp", 0.0))
+        self.Ki = float(gains.get("Ki", 0.0))
+        self.Kd = float(gains.get("Kd", 0.0))
+
         self.P = 0.0
+        self.I = 0.0
         self.D = 0.0
         self.prev_error = 0.0
 
-        # Anti-windup limits (valeurs POSITIVES)
-        # L'intégrale sera bornée dans [-output_min, output_max]
+        # Bornes pour l'intégrale
         self.output_min = float(output_min)
         self.output_max = float(output_max)
-        self.windup = config.get("windup", None)
 
-    def compute(self, error, dt):
+        # windup peut être 0/1, True/False, etc.
+        self.windup = bool(config.get("windup", 0))
+
+    def reset(self):
+        """Remet le PID à zéro (utile quand on est arrivé à la cible)."""
+        self.P = 0.0
+        self.I = 0.0
+        self.D = 0.0
+        self.prev_error = 0.0
+
+    def compute(self, error: float, dt: float) -> float:
+        """
+        Calcule la sortie du PID pour un échantillon.
+        error : consigne - mesure
+        dt    : pas de temps
+        """
+        if dt <= 0.0:
+            dt = 1e-6
+
         # Proportionnel
         self.P = self.Kp * error
 
-        # Intégral
+        # Intégral + anti-windup
         self.I += self.Ki * error * dt
-        self.windup_guard()
+        self._windup_guard()
 
-        # Dérivé (sur l'erreur, pas juste error/dt)
-        if dt > 0.0:
-            self.D = self.Kd * ((error - self.prev_error) / dt)
-        else:
-            self.D = 0.0
-
+        # Dérivé (sur l'erreur)
+        d_err = error - self.prev_error
+        self.D = self.Kd * (d_err / dt)
         self.prev_error = error
 
-        output = self.P + self.I + self.D
-        return output
+        return self.P + self.I + self.D
 
-    def windup_guard(self):
-        if self.windup:
-            # clamp de l'intégrale entre [-output_min, output_max]
-            if self.I > self.output_max:
-                self.I = self.output_max
-            elif self.I < -self.output_min:
-                self.I = -self.output_min
+    def _windup_guard(self):
+        if not self.windup:
+            return
+
+        if self.I > self.output_max:
+            self.I = self.output_max
+        elif self.I < -self.output_min:
+            self.I = -self.output_min
