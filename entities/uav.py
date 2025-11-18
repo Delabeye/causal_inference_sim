@@ -20,6 +20,7 @@ class UAV(Agent):
         self.config = config
         self.dt = dt
         self.physics_client_id = physics_client_id
+        self.name = config.get("name", "unnamed_uav")
 
         # ----------- Pose initiale -----------
         urdf_path = self.config["urdf_path"]

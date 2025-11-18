@@ -50,12 +50,15 @@ agents:
     start_pos: [0.0, 0.0, 0.2]
     start_orn_euler: [0.0, 0.0, 0.0]
 
-    setpoint: [2.0, 1.0, 1.0]
-
     physics:
       thrust_coeff: 2.2e-8   # plus utilisé ici
       max_rpm: 25000.0
       motor_link_indices: [0, 1, 2, 3]
 
-
+objectives:
+  # Liste des objectifs à atteindre
+  - type: "reach_position"
+    agent: "drone_0"
+    target_pos: [2.0, 1.0, 1.0]
+    
   
