@@ -103,16 +103,15 @@ class UAV(Agent):
         self.apply_physics(self.last_rpms)
 
     def apply_physics(self, rpms):
-
         for i, motor_link_index in enumerate(self.motor_link_indices):
-            thrust = self.thrust_coeff * (rpms[i]**2)
-        
-        # CORRECTION : Remplissage des champs vides
-            self.p.applyExternalForce (
+            thrust = self.thrust_coeff * (rpms[i] ** 2)
+
+        # Force vers +Z dans le repère du moteur
+            self.p.applyExternalForce(
                 objectUniqueId=self.bodyId,
                 linkIndex=motor_link_index,
-                forceObj=[0, 0, thrust],    # Force dans le repère local
-                posObj='',          # Position au centre du lien
-                flags=self.p.LINK_FRAME, # Crucial pour le contrôle 
-                physicsClientId=self.physics_client_id
+                forceObj=[0.0, 0.0, thrust],
+                posObj=[0.0, 0.0, 0.0],
+                flags=self.p.LINK_FRAME,
+                physicsClientId=self.physics_client_id,
         )
