@@ -47,10 +47,7 @@ agents:
 
     # Position et orientation initiales
     start_pos: [0.0, 0.0, 0.2]        # un peu au-dessus du sol
-    start_orn_euler: [5.0, 0.0, 0.0]  # pas de rotation
-
-    # Consigne (objectif) pour cet agent
-    setpoint: [0.0, 0.0, 1.5]
+    start_orn_euler: [1.0, 0.0, 0.0]  # pas de rotation
 
     # Paramètres physiques spécifiques
     physics:
@@ -78,3 +75,8 @@ agents:
           Ki: 0.0
           Kd: 0.1
         windup: 1.0
+
+objectives:
+  - type: "reach_setpoint"
+    agent: "drone_0"
+    final_position: [0.0, 0.0, 1.5]

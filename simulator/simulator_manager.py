@@ -99,7 +99,14 @@ class SimulationManager:
                     dt=self.dt,
                 )
                 self.agents.append(agent)
-                self.setpoints[agent.bodyId] = np.array(agent_config["setpoint"])
+
+        for objective in self.config.get("objectives", []):
+            agent_id = objective.get("agent_body_id")
+            if objective.get("type") == "reach_setpoint":
+                if agent_id is None:
+                    raise ValueError("Objective of type 'reach_setpoint' is missing 'agent_body_id'.")
+                setpoint = np.array(objective.get("setpoint", [0.0, 0.0, 0.0]), dtype=float)
+                self.setpoints[agent_id] = setpoint
 
         print(
             f"Scénario chargé : {len(self.agents)} agents, "
