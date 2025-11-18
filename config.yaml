@@ -47,16 +47,10 @@ agents:
     name: "drone_0"
     urdf_path: "assets/quadrotor.urdf"
 
-<<<<<<< HEAD
     start_pos: [0.0, 0.0, 0.2]
     start_orn_euler: [0.0, 0.0, 0.0]
 
     setpoint: [2.0, 1.0, 1.0]
-=======
-    # Position et orientation initiales
-    start_pos: [0.0, 0.0, 0.2]        # un peu au-dessus du sol
-    start_orn_euler: [1.0, 0.0, 0.0]  # pas de rotation
->>>>>>> b35ad1b73fadfdfb58e3056a84f00eb0f6ea549b
 
     physics:
       thrust_coeff: 2.2e-8   # plus utilisé ici
@@ -64,27 +58,4 @@ agents:
       motor_link_indices: [0, 1, 2, 3]
 
 
-<<<<<<< HEAD
   
-=======
-      gps:
-        position_noise_std: 0.05
-        velocity_noise_std: 0.02
-
-      estimator:
-        type: "kalman"
-        process_noise: 0.01
-
-      controller_z:
-        type: "pid"
-        gains:
-          Kp: 0.5
-          Ki: 0.0
-          Kd: 0.1
-        windup: 1.0
-
-objectives:
-  - type: "reach_setpoint"
-    agent: "drone_0"
-    final_position: [0.0, 0.0, 1.5]
->>>>>>> b35ad1b73fadfdfb58e3056a84f00eb0f6ea549b
