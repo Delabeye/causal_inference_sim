@@ -1,6 +1,6 @@
 import utilities.config as cfg 
-import entites.obstacles as obs
-import entites.sensor as sns
+import entities.obstacles as obs
+import entities.sensor as sns
 
 class Simulator:
 

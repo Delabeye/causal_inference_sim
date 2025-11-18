@@ -4,9 +4,9 @@ import time
 import numpy as np
 
 from environment.world import World
-from entites.uav import UAV
+from entities.uav import UAV
 # Importer les définitions d'obstacles 
-from entites.obstacles import CubeObstacle, SphericalObstacle, CylindricalObstacle
+from entities.obstacles import CubeObstacle, SphericalObstacle, CylindricalObstacle
 
 class SimulationManager:
     """

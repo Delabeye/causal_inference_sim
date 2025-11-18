@@ -1,11 +1,11 @@
 import pybullet as p
 import numpy as np
-from entites import agent # L'import vient de.agent_base
+from entities import agent # L'import vient de.agent_base
 import utilities.config as config
 from Control.PID import PlaceholderPIDController
 
 # Importer vos définitions de capteurs 
-from entites.sensor import GPSSensor
+from entities.sensor import GPSSensor
 
 # --- PLACEHOLDERS POUR L'ÉTAPE 3 (maintenant ils lisent la config) ---
 class PlaceholderKalmanFilter:
