@@ -34,7 +34,7 @@ class World:
         """
         half_extents = [cube_obstacle.length / 2, 
                         cube_obstacle.width / 2, 
-                        cube_obstacle.height / 2]
+                        cube_obstacle.height / 2] 
         
         # 1. Créer la forme de collision
         collision_shape_id = self.p.createCollisionShape(
