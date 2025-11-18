@@ -1,109 +1,80 @@
 #==================================================================
 # CONFIGURATION PRINCIPALE DU SIMULATEUR
-# C'est le seul fichier à modifier pour changer la simulation.
 #==================================================================
 
 simulation:
   # 'gui' pour voir la simulation, 'direct' pour tourner en arrière-plan
-  connect_mode: 'gui'
+  connect_mode: "gui"
   # Pas de temps de la simulation (1/240. = 240 Hz)
   dt: 0.00416
   # Durée maximale de la simulation en secondes
   max_sim_time: 30.0
 
 physics:
-  gravity: [0, 0, -9.81]
+  gravity: [0.0, 0.0, -9.81]
 
 #==================================================================
 # DÉFINITIONS DU MONDE
 #==================================================================
-#==================================================================
-# DEFINITIONS DU MONDE
-#==================================================================
+
 world:
   # Liste de tous les obstacles statiques
   obstacles:
-    # CORRECTION : Ajout d'un tiret '-' pour en faire un élément de liste
-    - type: 'cube'
-      center: [2, 0, 0.5]
-      length: 1
-      width: 1
-      height: 1
-      
-    # CORRECTION : Ajout d'un tiret '-'
-    - type: 'sphere'
-      center: [-2, 1, 1]
+    - type: "cube"
+      center: [2.0, 0.0, 0.5]
+      length: 1.0
+      width: 1.0
+      height: 1.0
+
+    - type: "sphere"
+      center: [-2.0, 1.0, 1.0]
       radius: 0.5
-      
-    # CORRECTION : Ajout d'un tiret '-'
-    - type: 'cylinder'
-      center: [0, 3, 1.5]
+
+    - type: "cylinder"
+      center: [0.0, 3.0, 1.5]
       radius: 0.25
-      height: 3
+      height: 3.0
 
 #==================================================================
 # DÉFINITIONS DES AGENTS
-# C'est une liste. Vous pouvez ajouter autant d'agents que vous le
-# souhaitez (drone_1, drone_2, ugv_1, etc.)
 #==================================================================
+
 agents:
-  
-  # --- Définition du premier agent ---
-  - type: 'uav'
-    name: 'drone_0'
-    urdf_path: "assets/quadrotor.urdf" # Doit correspondre à votre fichier
-    start_pos: 
-    start_orn_euler: 
-    
-    # Objectif (consigne) pour cet agent
-    setpoint: [0, 0, 1.5]
 
-    # Paramètres physiques spécifiques (globaux pour tous les UAVs)
+  - type: "uav"
+    name: "drone_0"
+    urdf_path: "assets/quadrotor.urdf"
+
+    # Position et orientation initiales
+    start_pos: [0.0, 0.0, 0.2]        # un peu au-dessus du sol
+    start_orn_euler: [0.0, 0.0, 0.0]  # pas de rotation
+
+    # Consigne (objectif) pour cet agent
+    setpoint: [0.0, 0.0, 1.5]
+
+    # Paramètres physiques spécifiques
     physics:
-      thrust_coeff: 2.2e-8     # N / (RPM^2) [3, 4, 5, 6, 7]
-      max_rpm: 25000
-      # Indices des liens moteurs dans l'URDF [8, 9]
-      motor_link_indices:  
+      thrust_coeff: 2.2e-8          # N / (RPM^2)
+      max_rpm: 25000.0
+      # Indices des liens moteurs dans l'URDF
+      # (adapter si besoin à ton quadrotor.urdf)
+      motor_link_indices: [0, 1, 2, 3]
 
-    # Définition des composants (selon votre schéma [Image 1])
+    # Définition des composants
     components:
-      
-      # Paramètres pour 'sensor camera' [Image 1]
+
       gps:
         position_noise_std: 0.05
         velocity_noise_std: 0.02
-        
-      # Paramètres pour 'sensor filter' [Image 1]
+
       estimator:
-        type: 'kalman' # (Pour l'instant, nous utilisons un stub)
+        type: "kalman"
         process_noise: 0.01
 
-      # Paramètres pour 'controller' [Image 1]
       controller_z:
-        type: 'pid'
-        gains: {Kp: 0.5, Ki: 0.0, Kd: 0.1, }
-        windup: 1
-
-  # --- Définition d'un deuxième agent (exemple) ---
-  # - type: 'uav'
-  #   name: 'drone_1'
-  #   urdf_path: "assets/quadrotor.urdf"
-  #   start_pos: 
-  #   start_orn_euler: 
-  #   setpoint: [1, 0, 2.0]
-  #   
-  #   physics:
-  #     thrust_coeff: 2.2e-8
-  #     max_rpm: 25000
-  #     motor_link_indices: 
-  #   
-  #   components:
-  #     gps:
-  #       position_noise_std: 0.1 # Bruit plus élevé pour celui-ci
-  #       velocity_noise_std: 0.05
-  #     estimator:
-  #       type: 'kalman'
-  #       process_noise: 0.01
-  #     controller_z:
-  #       type: 'pid'
-  #       gains: {Kp: 0.6, Ki: 0.0, Kd: 0.1}
+        type: "pid"
+        gains:
+          Kp: 0.5
+          Ki: 0.0
+          Kd: 0.1
+        windup: 1.0
