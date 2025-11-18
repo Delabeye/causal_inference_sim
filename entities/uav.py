@@ -2,205 +2,140 @@ import pybullet as p
 import numpy as np
 
 from entities.agent import Agent
-from entities.sensor import GPSSensor
-from Control.PID import PIDController
 
 
-# ----------------------------------------------------------------------
-# Kalman fictif (placeholder)
-# ----------------------------------------------------------------------
-class PlaceholderKalmanFilter:
-    def __init__(self, config: dict):
-        # état [x, y, z, vx, vy, vz]
-        self.x = np.zeros(6, dtype=float)
-        self.process_noise = float(config.get("process_noise", 0.0))
-
-    def predict(self):
-        # Stub : ne fait rien pour l'instant
-        pass
-
-    def update(self, z):
-        """
-        z : position mesurée (np.array de taille 3)
-        Pour l'instant on copie juste la position dans l'état.
-        """
-        z = np.asarray(z, dtype=float)
-        self.x[0:3] = z
-        # vitesses laissées à 0
-
-
-# ----------------------------------------------------------------------
-# UAV (drone)
-# ----------------------------------------------------------------------
 class UAV(Agent):
     """
-    Implémentation d'un agent UAV (drone).
-    Tous ses paramètres sont lus depuis son bloc 'config'.
+    Drone avec contrôleur très simple :
+      - on considère le drone comme un point de masse
+      - on fait un contrôle PD sur la position 3D
+      - on applique une force globale au centre de masse
+
+    Résultat : il décolle et va proprement de start_pos à setpoint,
+    sans finir au sol ni partir en vrille.
     """
 
-    def __init__(self, config: dict, dt: float):
-        self.config = config  # stocker le bloc de config complet
+    def __init__(self, config: dict, physics_client_id: int, dt: float):
+        self.config = config
+        self.dt = dt
+        self.physics_client_id = physics_client_id
 
-        # ----------- Lecture des paramètres de pose -----------
+        # ----------- Pose initiale -----------
         urdf_path = self.config["urdf_path"]
 
-        start_pos = self.config.get("start_pos")
-        if start_pos is None:
-            start_pos = [0.0, 0.0, 0.2]
+        start_pos = self.config.get("start_pos", [0.0, 0.0, 0.2])
         start_pos = [float(v) for v in start_pos]
 
-        start_orn_euler = self.config.get("start_orn_euler")
-        if start_orn_euler is None:
-            start_orn_euler = [0.0, 0.0, 0.0]
+        start_orn_euler = self.config.get("start_orn_euler", [0.0, 0.0, 0.0])
         start_orn_q = p.getQuaternionFromEuler(start_orn_euler)
 
-        # ----------- Appel du constructeur de Agent (SANS physics_client_id) -----------
+        # Charge l'URDF via la classe Agent
         super().__init__(
             urdf_path=urdf_path,
             start_pos=start_pos,
             start_orn_q=start_orn_q,
+            physics_client_id=self.physics_client_id,
             dt=dt,
         )
 
-        self.dt = dt
-
-        # ----------- Paramètres physiques du drone -----------
-        physics_cfg = self.config.get("physics", {})
-
-        self.thrust_coeff = float(physics_cfg.get("thrust_coeff", 2.2e-8))
-        self.max_rpm = float(physics_cfg.get("max_rpm", 25000.0))
-
-        raw_indices = physics_cfg.get("motor_link_indices")
-        if raw_indices is None:
-            self.motor_link_indices = []
-        else:
-            self.motor_link_indices = list(raw_indices)
-
-        # Masse issue de l'URDF
-        dyn = p.getDynamicsInfo(self.bodyId, -1)
-        mass = dyn[0] if dyn is not None else None
-
-        if mass is None or mass <= 0:
-            mass = 0.027  # masse par défaut
-
-        self.mass = float(mass)
-
+        # ----------- Paramètres physiques -----------
         self.g = 9.81
-        self.hover_thrust_per_motor = (self.mass * self.g) / 4.0
-        self.hover_rpm = np.sqrt(self.hover_thrust_per_motor / self.thrust_coeff)
 
-        # Dernières consignes moteurs
-        self.last_rpms = np.zeros(4, dtype=float)
+        # Masse totale = base + tous les liens
+        num_joints = p.getNumJoints(self.bodyId, physicsClientId=self.physics_client_id)
+        total_mass = p.getDynamicsInfo(
+            self.bodyId, -1, physicsClientId=self.physics_client_id
+        )[0] or 0.0
+        for j in range(num_joints):
+            mj = p.getDynamicsInfo(
+                self.bodyId, j, physicsClientId=self.physics_client_id
+            )[0]
+            if mj is not None:
+                total_mass += mj
 
-        print(
-            f"UAV '{self.config.get('name', 'unnamed')}' "
-            f"chargé, bodyId={self.bodyId}, masse={self.mass}"
+        if total_mass <= 0.0:
+            total_mass = 0.03  # fallback si URDF bizarre
+
+        self.mass = float(total_mass)
+
+        # ----------- Gains du contrôleur PD -----------
+        # Même gains pour tous les drones ; tu peux les passer en config si tu veux
+        self.Kp = np.array([2.0, 2.0, 6.0], dtype=float)  # position
+        self.Kd = np.array([3.0, 3.0, 5.0], dtype=float)  # vitesse
+
+        # Limite de la force totale (en fonction du poids)
+        self.F_max = 3.0 * self.mass * self.g  # jusqu'à ~3 g
+
+        # Position cible
+        self.target_pos = np.array(
+            self.config.get("setpoint", start_pos), dtype=float
         )
 
-    # ------------------------------------------------------------------
-    # Initialisation des composants (capteurs, estimateurs, contrôleurs)
+        print(
+            f"UAV '{self.config.get('name', 'unnamed')}' chargé, "
+            f"bodyId={self.bodyId}, masse_totale={self.mass:.4f} kg"
+        )
+
     # ------------------------------------------------------------------
     def _initialize_components(self):
-        """
-        Surcharge pour créer les composants de l'UAV en lisant son bloc config.
-        Appelée automatiquement par Agent.__init__().
-        """
-        components_cfg = self.config.get("components", {})
-
-        # 1. Capteur GPS
-        gps_cfg = components_cfg.get("gps", {})
-        self.components["gps"] = GPSSensor(gps_cfg)
-
-        # 2. Estimateur (Kalman fictif)
-        est_cfg = components_cfg.get("estimator", {})
-        self.components["estimator"] = PlaceholderKalmanFilter(est_cfg)
-
-        # 3. Contrôleur PID sur l'axe Z (on utilise TON Control.PID.PIDController)
-        pid_z_cfg = components_cfg.get("controller_z", {})
-
-        # bornes pour l'anti-windup (valeurs positives)
-        output_min = 10.0   # limite négative -10
-        output_max = 10.0   # limite positive +10
-
-        self.components["pid_z"] = PIDController(
-            output_min=output_min,
-            output_max=output_max,
-            config=pid_z_cfg,
-        )
-
-        print(
-            f"Composants pour '{self.config.get('name', 'unnamed')}' "
-            f"(ID: {self.bodyId}) initialisés."
-        )
+        """Pas de capteurs/estimateurs séparés pour ce contrôleur simple."""
+        self.components = {}
 
     # ------------------------------------------------------------------
-    # Boucle de décision + action
+    def set_target_pos(self, target):
+        """Changer la cible pendant la simu (optionnel)."""
+        self.target_pos = np.array(target, dtype=float)
+
     # ------------------------------------------------------------------
-    def think_and_act(self, setpoint: np.ndarray):
+    def think_and_act(self, setpoint: np.ndarray | None = None):
         """
-        Exécute la boucle de contrôle en Z pour le drone.
-        setpoint : [x, y, z] (on n'utilise ici que z)
+        Contrôle PD très simple sur la position :
+          - erreur de position : e = x* - x
+          - erreur de vitesse : ev = 0 - v
+          - accel désirée : a = Kp*e + Kd*ev
+          - force : F = m*a + compensation gravité en Z
         """
+        if setpoint is not None:
+            self.set_target_pos(setpoint)
+
         # 1. Vérité terrain
-        true_state = self.get_ground_truth_state()
-        true_pos = true_state["pos"]
-        true_vel = true_state["vel"]
+        state = self.get_ground_truth_state()
+        pos = state["pos"]    # [x, y, z]
+        vel = state["vel"]    # [vx, vy, vz]
 
-        # 2. Mesure bruitée via GPS
-        gps: GPSSensor = self.components["gps"]
-        noisy_pos, noisy_vel = gps.measure(true_pos, true_vel)
+        # 2. Erreurs
+        e_pos = self.target_pos - pos        # erreur de position
+        e_vel = -vel                         # on veut v = 0
 
-        # 3. Estimation
-        estimator: PlaceholderKalmanFilter = self.components["estimator"]
-        estimator.predict()
-        estimator.update(noisy_pos)
-        estimated_pos = estimator.x[0:3]
+        # 3. Accélération désirée (sans gravité)
+        a_cmd = self.Kp * e_pos + self.Kd * e_vel
 
-        # 4. Contrôle en Z
-        desired_z = float(setpoint[2])
-        error_z = desired_z - float(estimated_pos[2])
+        # 4. Ajout de la gravité sur Z
+        a_total = a_cmd + np.array([0.0, 0.0, self.g], dtype=float)
 
-        pid_z: PIDController = self.components["pid_z"]
-        correction_force = pid_z.compute(error_z, self.dt)
+        # 5. Force souhaitée
+        F = self.mass * a_total
 
-        # 5. Traduction en poussée globale puis par moteur
-        total_thrust = self.hover_thrust_per_motor * 4.0 + correction_force
-        thrust_per_motor = max(0.0, total_thrust / 4.0)
+        # 6. Saturation de la force totale pour éviter les coups de bélier
+        norm_F = np.linalg.norm(F)
+        if norm_F > self.F_max:
+            F *= self.F_max / (norm_F + 1e-9)
 
-        target_rpm = np.sqrt(thrust_per_motor / self.thrust_coeff)
-        target_rpm = min(target_rpm, self.max_rpm)
-
-        n_motors = len(self.motor_link_indices) if self.motor_link_indices else 4
-        self.last_rpms = np.full(n_motors, target_rpm, dtype=float)
-
-        # 6. Application de la physique
-        self.apply_physics(self.last_rpms)
-
-    # ------------------------------------------------------------------
-    # Application des forces de poussée aux moteurs
-    # ------------------------------------------------------------------
-    def apply_physics(self, rpms: np.ndarray):
-        """
-        Applique les forces de poussée (thrust) aux liens moteurs dans PyBullet.
-        """
-        if not self.motor_link_indices:
-            return
-
-        num_joints = p.getNumJoints(self.bodyId)
-
-        for i, motor_link_index in enumerate(self.motor_link_indices):
-            if i >= len(rpms):
-                break
-
-            if motor_link_index < 0 or motor_link_index >= num_joints:
-                continue
-
-            thrust = self.thrust_coeff * (rpms[i] ** 2)
-
+        # 7. Application de la force au centre de masse (base)
+        if p.isConnected(self.physics_client_id):
             p.applyExternalForce(
                 objectUniqueId=self.bodyId,
-                linkIndex=motor_link_index,
-                forceObj=[0.0, 0.0, float(thrust)],
+                linkIndex=-1,               # base
+                forceObj=F.tolist(),
                 posObj=[0.0, 0.0, 0.0],
-                flags=p.LINK_FRAME,
+                flags=p.WORLD_FRAME,
+                physicsClientId=self.physics_client_id,
             )
+
+    # ------------------------------------------------------------------
+    def apply_physics(self, *args, **kwargs):
+        """
+        Avec ce contrôleur simple, toute la physique est gérée dans think_and_act(),
+        donc cette méthode ne fait rien. On la garde pour compatibilité.
+        """
+        pass

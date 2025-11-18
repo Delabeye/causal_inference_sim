@@ -1,53 +1,47 @@
+# entities/agent.py
 import pybullet as p
 import numpy as np
 
 
 class Agent:
     """
-    Classe de base pour tous les agents physiques (UAV, UGV, etc.).
-    Gère le bodyId PyBullet et fournit la vérité terrain.
+    Classe de base pour les agents physiques (UAV, etc.).
+    Gère bodyId et la vérité terrain.
     """
 
-    def __init__(self, urdf_path, start_pos, start_orn_q, dt: float):
+    def __init__(self, urdf_path, start_pos, start_orn_q, physics_client_id, dt: float):
         self.p = p
         self.dt = dt
+        self.physics_client_id = physics_client_id
 
-        # On suppose que p.connect(...) a déjà été fait AVANT
         self.bodyId = self.p.loadURDF(
             fileName=urdf_path,
             basePosition=start_pos,
             baseOrientation=start_orn_q,
+            physicsClientId=self.physics_client_id,
         )
-        print(f"Agent chargé avec bodyId: {self.bodyId}")
 
         self.components = {}
         self._initialize_components()
 
     def _initialize_components(self):
-        """
-        Surchargée dans les sous-classes pour créer capteurs/contrôleurs.
-        """
+        """Surchargée dans les sous-classes si besoin."""
         pass
 
     def get_ground_truth_state(self):
-        """
-        Retourne l'état parfait depuis PyBullet (position, orientation, vitesses).
-        """
-        if not self.p.isConnected():
-            raise RuntimeError("PyBullet n'est pas connecté (get_ground_truth_state).")
+        if not self.p.isConnected(self.physics_client_id):
+            raise RuntimeError("PyBullet n'est plus connecté au physics server.")
 
-        pos, orn_q = self.p.getBasePositionAndOrientation(self.bodyId)
-        vel, ang_vel = self.p.getBaseVelocity(self.bodyId)
+        pos, orn_q = self.p.getBasePositionAndOrientation(
+            self.bodyId, physicsClientId=self.physics_client_id
+        )
+        vel, ang_vel = self.p.getBaseVelocity(
+            self.bodyId, physicsClientId=self.physics_client_id
+        )
 
         return {
-            "pos": np.array(pos),
-            "orn_q": np.array(orn_q),
-            "vel": np.array(vel),
-            "ang_vel": np.array(ang_vel),
+            "pos": np.array(pos, dtype=float),
+            "orn_q": np.array(orn_q, dtype=float),
+            "vel": np.array(vel, dtype=float),
+            "ang_vel": np.array(ang_vel, dtype=float),
         }
-
-    def think_and_act(self, setpoint):
-        raise NotImplementedError("La méthode 'think_and_act' doit être implémentée.")
-
-    def apply_physics(self, *args):
-        raise NotImplementedError("La méthode 'apply_physics' doit être implémentée.")
