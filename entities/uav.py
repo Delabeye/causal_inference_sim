@@ -2,18 +2,16 @@ import pybullet as p
 import numpy as np
 
 from entities.agent import Agent
+from Control.PID import PIDController
 
 
 class UAV(Agent):
     """
-    Drone avec contrôleur très simple :
-      - modèle de masse ponctuelle
-      - contrôle PD sur la position 3D
-      - force appliquée au centre de masse
+    Drone avec contrôleur simple à base de PID sur la position :
+      - 3 PID (x, y, z) configurés dans config.yaml
+      - sortie des PID = accélération désirée
+      - force = m * (a_cmd + gravité) appliquée au centre de masse
       - orientation figée (pas de rotation parasite)
-
-    Objectif : aller de start_pos à setpoint proprement,
-    sans finir au sol et sans tourner sur lui-même.
     """
 
     def __init__(self, config: dict, physics_client_id: int, dt: float):
@@ -29,7 +27,7 @@ class UAV(Agent):
 
         start_orn_euler = self.config.get("start_orn_euler", [0.0, 0.0, 0.0])
         start_orn_q = p.getQuaternionFromEuler(start_orn_euler)
-        self.initial_orn_q = start_orn_q  # on garde l'orientation de référence
+        self.initial_orn_q = start_orn_q  # orientation de référence
 
         # Charge l'URDF via la classe Agent
         super().__init__(
@@ -60,13 +58,34 @@ class UAV(Agent):
 
         self.mass = float(total_mass)
 
-        # ----------- Gains du contrôleur PD -----------
-        # Gains plus doux pour limiter les oscillations
-        self.Kp = np.array([1.0, 1.0, 3.0], dtype=float)   # X, Y, Z
-        self.Kd = np.array([4.0, 4.0, 6.0], dtype=float)   # X, Y, Z
+        # ----------- PID à partir du YAML -----------
+        components_cfg = self.config.get("components", {})
+
+        def get_pid_cfg(name: str, fallback: dict | None = None) -> dict:
+            if name in components_cfg:
+                return components_cfg[name]
+            if fallback is not None:
+                return fallback
+            # config par défaut si rien n'est défini
+            return {
+                "gains": {"Kp": 1.0, "Ki": 0.0, "Kd": 0.0},
+                "windup": 0.0,
+            }
+
+        cfg_z = get_pid_cfg("controller_z")
+        cfg_x = get_pid_cfg("controller_x", fallback=cfg_z)
+        cfg_y = get_pid_cfg("controller_y", fallback=cfg_z)
+
+        # limites pour l'intégrale (et comme référence de saturation)
+        self.acc_limit_xy = 5.0   # m/s^2 max en x/y
+        self.acc_limit_z  = 5.0   # m/s^2 max en z
+
+        self.pid_x = PIDController(self.acc_limit_xy, self.acc_limit_xy, cfg_x)
+        self.pid_y = PIDController(self.acc_limit_xy, self.acc_limit_xy, cfg_y)
+        self.pid_z = PIDController(self.acc_limit_z,  self.acc_limit_z,  cfg_z)
 
         # Limite de la force totale (en fonction du poids)
-        self.F_max = 2.0 * self.mass * self.g  # jusqu'à ~2 g
+        self.F_max = 2.5 * self.mass * self.g  # jusqu'à ~2.5 g
 
         # Zone morte autour de la cible (pour éviter les tremblements)
         self.pos_tolerance = 0.05   # 5 cm
@@ -95,35 +114,56 @@ class UAV(Agent):
     # ------------------------------------------------------------------
     def think_and_act(self, setpoint: np.ndarray | None = None):
         """
-        Contrôle PD très simple sur la position :
-          - tant qu'on est loin de la cible : PD complet (forces)
+        Contrôle de position avec PID (x, y, z) :
+          - tant qu'on est loin de la cible : on utilise les PID
           - une fois proche et lent : on compense juste la gravité
           - orientation figée pour éviter que le drone tourne sur lui-même
+          - si PyBullet est déconnecté -> on ne fait rien
         """
+        # Si le serveur n'est plus connecté, on ne fait rien
+        if not p.isConnected(self.physics_client_id):
+            return
+
         if setpoint is not None:
             self.set_target_pos(setpoint)
 
-        # 1. Vérité terrain
-        state = self.get_ground_truth_state()
-        pos = state["pos"]    # [x, y, z]
-        vel = state["vel"]    # [vx, vy, vz]
+        try:
+            # 1. Vérité terrain
+            state = self.get_ground_truth_state()
+            pos = state["pos"]    # [x, y, z]
+            vel = state["vel"]    # [vx, vy, vz]
+        except p.error:
+            return
 
         # 2. Erreurs
         e_pos = self.target_pos - pos        # erreur de position
-        e_vel = -vel                         # on veut v = 0
-
+        e_vel = -vel                         # v_cible = 0
         dist = np.linalg.norm(e_pos)
         speed = np.linalg.norm(vel)
 
-        # 3. Si on est très proche et presque à l'arrêt -> juste compenser la gravité
+        # 3. Zone morte : si on est arrivé et quasi immobile
         if dist < self.pos_tolerance and speed < self.vel_tolerance:
+            # On remet les PID à zéro pour éviter l'accumulation
+            self.pid_x.reset()
+            self.pid_y.reset()
+            self.pid_z.reset()
+            # Force uniquement pour tenir en l'air
             F = np.array([0.0, 0.0, self.mass * self.g], dtype=float)
         else:
-            # 4. Accélération désirée (sans gravité)
-            a_cmd = self.Kp * e_pos + self.Kd * e_vel
+            # 4. PID par axe -> accélérations désirées
+            ex, ey, ez = e_pos
+
+            ax_cmd = self.pid_x.compute(float(ex), self.dt)
+            ay_cmd = self.pid_y.compute(float(ey), self.dt)
+            az_cmd = self.pid_z.compute(float(ez), self.dt)
+
+            # Saturation des accélérations
+            ax_cmd = float(np.clip(ax_cmd, -self.acc_limit_xy, self.acc_limit_xy))
+            ay_cmd = float(np.clip(ay_cmd, -self.acc_limit_xy, self.acc_limit_xy))
+            az_cmd = float(np.clip(az_cmd, -self.acc_limit_z,  self.acc_limit_z))
 
             # 5. Ajout de la gravité sur Z
-            a_total = a_cmd + np.array([0.0, 0.0, self.g], dtype=float)
+            a_total = np.array([ax_cmd, ay_cmd, az_cmd + self.g], dtype=float)
 
             # 6. Force souhaitée
             F = self.mass * a_total
@@ -133,8 +173,12 @@ class UAV(Agent):
             if norm_F > self.F_max:
                 F *= self.F_max / (norm_F + 1e-9)
 
-        # 8. Application de la force au centre de masse (base)
-        if p.isConnected(self.physics_client_id):
+        # 8. Application de la force + verrouillage orientation
+        if not p.isConnected(self.physics_client_id):
+            return
+
+        try:
+            # appliquer la force au centre de masse
             p.applyExternalForce(
                 objectUniqueId=self.bodyId,
                 linkIndex=-1,               # base
@@ -144,10 +188,7 @@ class UAV(Agent):
                 physicsClientId=self.physics_client_id,
             )
 
-            # 9. VERROUILLER L'ORIENTATION (pas de rotation)
-            #    - on garde la position actuelle
-            #    - on force l'orientation à la valeur initiale
-            #    - on annule la vitesse angulaire
+            # Verrouiller l'orientation + annuler la rotation
             cur_pos, cur_orn = p.getBasePositionAndOrientation(
                 self.bodyId, physicsClientId=self.physics_client_id
             )
@@ -155,7 +196,6 @@ class UAV(Agent):
                 self.bodyId, physicsClientId=self.physics_client_id
             )
 
-            # fixe l'orientation
             p.resetBasePositionAndOrientation(
                 self.bodyId,
                 cur_pos,
@@ -163,13 +203,14 @@ class UAV(Agent):
                 physicsClientId=self.physics_client_id,
             )
 
-            # annule la rotation
             p.resetBaseVelocity(
                 self.bodyId,
                 linearVelocity=lin_vel,
                 angularVelocity=[0.0, 0.0, 0.0],
                 physicsClientId=self.physics_client_id,
             )
+        except p.error:
+            return
 
     # ------------------------------------------------------------------
     def apply_physics(self, *args, **kwargs):
