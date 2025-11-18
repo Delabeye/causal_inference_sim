@@ -3,39 +3,7 @@ import numpy as np
 
 from entities.agent import Agent
 from entities.sensor import GPSSensor
-
-
-# ----------------------------------------------------------------------
-# PID minimal interne (on n'utilise plus Control.PID)
-# ----------------------------------------------------------------------
-class PIDController:
-    def __init__(self, config: dict):
-        """
-        config:
-          gains: {Kp: ..., Ki: ..., Kd: ...}
-          windup: valeur max de l'intégrale (optionnel)
-        """
-        gains = config.get("gains", {})
-        self.Kp = float(gains.get("Kp", 0.0))
-        self.Ki = float(gains.get("Ki", 0.0))
-        self.Kd = float(gains.get("Kd", 0.0))
-
-        self.integral = 0.0
-        self.prev_error = 0.0
-        self.windup = float(config.get("windup", 0.0))  # 0.0 => pas de clamp
-
-    def compute(self, error: float, dt: float) -> float:
-        # Intégrale
-        self.integral += error * dt
-        if self.windup > 0.0:
-            self.integral = max(-self.windup, min(self.windup, self.integral))
-
-        # Dérivée
-        derivative = (error - self.prev_error) / dt if dt > 0.0 else 0.0
-        self.prev_error = error
-
-        # Sortie PID
-        return self.Kp * error + self.Ki * self.integral + self.Kd * derivative
+from Control.PID import PIDController
 
 
 # ----------------------------------------------------------------------
@@ -70,7 +38,7 @@ class UAV(Agent):
     Tous ses paramètres sont lus depuis son bloc 'config'.
     """
 
-    def __init__(self, config: dict, physics_client_id: int, dt: float):
+    def __init__(self, config: dict, dt: float):
         self.config = config  # stocker le bloc de config complet
 
         # ----------- Lecture des paramètres de pose -----------
@@ -86,17 +54,15 @@ class UAV(Agent):
             start_orn_euler = [0.0, 0.0, 0.0]
         start_orn_q = p.getQuaternionFromEuler(start_orn_euler)
 
-        # ----------- Appel du constructeur de Agent -----------
+        # ----------- Appel du constructeur de Agent (SANS physics_client_id) -----------
         super().__init__(
             urdf_path=urdf_path,
             start_pos=start_pos,
             start_orn_q=start_orn_q,
-            physics_client_id=physics_client_id,
             dt=dt,
         )
 
         self.dt = dt
-        self.physics_client_id = physics_client_id
 
         # ----------- Paramètres physiques du drone -----------
         physics_cfg = self.config.get("physics", {})
@@ -111,11 +77,7 @@ class UAV(Agent):
             self.motor_link_indices = list(raw_indices)
 
         # Masse issue de l'URDF
-        dyn = p.getDynamicsInfo(
-            self.bodyId,
-            -1,
-            physicsClientId=self.physics_client_id,
-        )
+        dyn = p.getDynamicsInfo(self.bodyId, -1)
         mass = dyn[0] if dyn is not None else None
 
         if mass is None or mass <= 0:
@@ -153,9 +115,18 @@ class UAV(Agent):
         est_cfg = components_cfg.get("estimator", {})
         self.components["estimator"] = PlaceholderKalmanFilter(est_cfg)
 
-        # 3. Contrôleur PID sur l'axe Z
+        # 3. Contrôleur PID sur l'axe Z (on utilise TON Control.PID.PIDController)
         pid_z_cfg = components_cfg.get("controller_z", {})
-        self.components["pid_z"] = PIDController(pid_z_cfg)
+
+        # bornes pour l'anti-windup (valeurs positives)
+        output_min = 10.0   # limite négative -10
+        output_max = 10.0   # limite positive +10
+
+        self.components["pid_z"] = PIDController(
+            output_min=output_min,
+            output_max=output_max,
+            config=pid_z_cfg,
+        )
 
         print(
             f"Composants pour '{self.config.get('name', 'unnamed')}' "
@@ -215,7 +186,7 @@ class UAV(Agent):
         if not self.motor_link_indices:
             return
 
-        num_joints = p.getNumJoints(self.bodyId, physicsClientId=self.physics_client_id)
+        num_joints = p.getNumJoints(self.bodyId)
 
         for i, motor_link_index in enumerate(self.motor_link_indices):
             if i >= len(rpms):
@@ -232,5 +203,4 @@ class UAV(Agent):
                 forceObj=[0.0, 0.0, float(thrust)],
                 posObj=[0.0, 0.0, 0.0],
                 flags=p.LINK_FRAME,
-                physicsClientId=self.physics_client_id,
             )

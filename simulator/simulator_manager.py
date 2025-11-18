@@ -14,7 +14,7 @@ class SimulationManager:
     Construit et exécute la simulation en se basant sur un objet config.
     """
 
-    def __init__(self, config):
+    def __init__(self, config: dict):
         self.config = config
         self.dt = self.config["simulation"]["dt"]
 
@@ -22,25 +22,21 @@ class SimulationManager:
         mode_str = str(self.config["simulation"]["connect_mode"]).strip().lower()
         mode = p.GUI if mode_str == "gui" else p.DIRECT
 
-        self.physics_client_id = p.connect(mode)
-        if self.physics_client_id < 0:
+        self.client_id = p.connect(mode)
+        if self.client_id < 0:
             raise ConnectionError("N'a pas pu se connecter au client PyBullet.")
 
-        print(f"Connecté au client PyBullet avec l'ID: {self.physics_client_id}")
+        print(f"Connecté au client PyBullet avec l'ID: {self.client_id}")
 
         # Chemin des ressources + gravité
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(*self.config["physics"]["gravity"])
 
         # 2. Initialiser l'environnement (sol, gravité)
-        self.world = World(self.physics_client_id)
+        self.world = World(self.client_id)
         self.world.load_basic_environment()
 
         # 3. Optionnel : régler la caméra pour bien voir les obstacles
-        # Tes obstacles YAML sont vers :
-        #   cube     : [2, 0, 0.5]
-        #   sphère   : [-2, 1, 1]
-        #   cylindre : [0, 3, 1.5]
         if mode == p.GUI:
             p.resetDebugVisualizerCamera(
                 cameraDistance=6.0,
@@ -97,9 +93,9 @@ class SimulationManager:
         for agent_config in self.config.get("agents", []):
             if agent_config.get("type") == "uav":
                 # Le constructeur UAV lit tout dans son bloc config
+                # IMPORTANT : plus de physics_client_id ici
                 agent = UAV(
                     config=agent_config,
-                    physics_client_id=self.physics_client_id,
                     dt=self.dt,
                 )
                 self.agents.append(agent)
@@ -120,14 +116,14 @@ class SimulationManager:
         sim_time = 0.0
         max_time = self.config["simulation"]["max_sim_time"]
 
-        while sim_time < max_time:
+        while sim_time < max_time and p.isConnected(self.client_id):
             # 1. Penser (Think)
             for agent in self.agents:
                 setpoint = self.setpoints.get(agent.bodyId, np.zeros(3))
                 agent.think_and_act(setpoint)
 
             # 2. Avancer la physique
-            p.stepSimulation(physicsClientId=self.physics_client_id)
+            p.stepSimulation()
 
             # 3. (Optionnel) logging ici
 
@@ -138,6 +134,6 @@ class SimulationManager:
     # Arrêt propre
     # ------------------------------------------------------------------
     def stop(self):
-        if p.isConnected(self.physics_client_id):
+        if p.isConnected(self.client_id):
             print("Déconnexion de PyBullet.")
-            p.disconnect(physicsClientId=self.physics_client_id)
+            p.disconnect(self.client_id)

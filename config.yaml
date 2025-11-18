@@ -47,7 +47,7 @@ agents:
 
     # Position et orientation initiales
     start_pos: [0.0, 0.0, 0.2]        # un peu au-dessus du sol
-    start_orn_euler: [0.0, 0.0, 0.0]  # pas de rotation
+    start_orn_euler: [5.0, 0.0, 0.0]  # pas de rotation
 
     # Consigne (objectif) pour cet agent
     setpoint: [0.0, 0.0, 1.5]
