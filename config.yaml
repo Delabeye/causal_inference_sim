@@ -9,7 +9,7 @@ simulation:
   dt: 0.00416
 
   # Durée maximale de la simulation en secondes
-  max_sim_time: 30.0
+  max_sim_time: 60.0
 
 # Gravité
 physics:
@@ -19,7 +19,6 @@ physics:
 # DÉFINITIONS DU MONDE
 #===============================================================
 world:
-  # Liste de tous les obstacles statiques
   obstacles:
     - type: "cube"
       center: [2.0, 0.0, 0.5]
@@ -37,10 +36,16 @@ world:
       height: 3.0
 
 #===============================================================
-# DÉFINITIONS DES AGENTS (DRONES)
+# DÉFINITIONS DES AGENTS (10 DRONES)
 #===============================================================
+swarm:
+  enabled: false       # <- mets false pour désactiver l'essaim
+  leader: "drone_0"   # nom du drone leader (optionnel, par défaut le 1er)
+  min_sep: 0.6        # distance minimale entre drones (m)
+  avoid_gain: 0.5     # intensité de la répulsion (0..1 recommandé)
+
 agents:
-  # --- Premier drone : suit une liste de waypoints ---
+  #------------------- DRONE 0 : LEADER ------------------------
   - type: "uav"
     name: "drone_0"
     urdf_path: "assets/quadrotor.urdf"
@@ -52,21 +57,23 @@ agents:
       max_rpm: 25000.0
       motor_link_indices: [0, 1, 2, 3]
 
-    # Waypoints dans le repère monde (x, y, z)
-    # Le drone s'y rendra dans l'ordre.
     waypoints:
+      - [0.0, 0.0, 1.0]
       - [2.0, 1.0, 1.0]
-      - [0.0, 2.0, 1.0]
-      - [-1.0, 1.0, 1.0]
+      - [2.0, -1.0, 1.2]
+      - [0.0, -2.0, 1.0]
+      - [-2.0, -1.0, 1.0]
+      - [-2.0, 1.0, 1.2]
+      - [0.0, 0.0, 1.0]
 
-    # Paramètres supplémentaires (optionnels)
+    # Paramètres de dynamique "simple"
     acc_limit_xy: 5.0
     acc_limit_z: 5.0
     F_max_factor: 2.5
     pos_tolerance: 0.05
     vel_tolerance: 0.05
 
-    # Orientation "réaliste"
+    # Orientation réaliste
     yaw_align_gain: 4.0
     yaw_rate_max_deg: 120.0
     yaw_align_threshold_deg: 10.0
@@ -101,11 +108,11 @@ agents:
           Kd: 4.0
         windup: 1.0
 
-  # --- Deuxième drone : par exemple il reste à une position fixe ---
+
   - type: "uav"
     name: "drone_1"
     urdf_path: "assets/quadrotor.urdf"
-    start_pos: [-1.0, 0.0, 0.2]
+    start_pos: [-0.5, 0.3, 0.2]
     start_orn_euler: [0.0, 0.0, 0.0]
 
     physics:
@@ -113,8 +120,7 @@ agents:
       max_rpm: 25000.0
       motor_link_indices: [0, 1, 2, 3]
 
-    # Ici un seul setpoint, le drone fera juste du vol stationnaire
-    setpoint: [-1.0, 0.0, 1.0]
+    setpoint: [-0.5, 0.3, 1.0]
 
     acc_limit_xy: 5.0
     acc_limit_z: 5.0
@@ -139,7 +145,6 @@ agents:
           Ki: 0.0
           Kd: 2.0
         windup: 1.0
-
       controller_y:
         type: "pid"
         gains:
@@ -147,7 +152,6 @@ agents:
           Ki: 0.0
           Kd: 2.0
         windup: 1.0
-
       controller_z:
         type: "pid"
         gains:
@@ -156,7 +160,3 @@ agents:
           Kd: 4.0
         windup: 1.0
 
-#===============================================================
-# OBJECTIFS (on les laisse vides, on utilise les waypoints)
-#===============================================================
-objectives: []
