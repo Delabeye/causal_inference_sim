@@ -1,4 +1,3 @@
-# simulator/simulator_manager.py
 import time
 import numpy as np
 import pybullet as p
@@ -29,7 +28,6 @@ class SimulationManager:
         self.physics_client_id = p.connect(mode)
         if self.physics_client_id < 0:
             raise ConnectionError("Impossible de se connecter à PyBullet.")
-
         print(f"Connecté à PyBullet, client_id={self.physics_client_id}")
 
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -61,7 +59,6 @@ class SimulationManager:
         world_cfg = self.config.get("world", {})
         for obs_cfg in world_cfg.get("obstacles", []):
             otype = obs_cfg.get("type")
-
             if otype == "cube":
                 obstacle = CubeObstacle(
                     center=obs_cfg["center"],
@@ -70,14 +67,12 @@ class SimulationManager:
                     height=obs_cfg["height"],
                 )
                 self.world.add_cube_obstacle(obstacle)
-
             elif otype == "sphere":
                 obstacle = SphericalObstacle(
                     center=obs_cfg["center"],
                     radius=obs_cfg["radius"],
                 )
                 self.world.add_sphere_obstacle(obstacle)
-
             elif otype == "cylinder":
                 obstacle = CylindricalObstacle(
                     center=obs_cfg["center"],
@@ -96,37 +91,39 @@ class SimulationManager:
                 )
                 self.agents.append(uav)
 
+        # Objectifs -> éventuellement plusieurs waypoints par drone
         for objective in self.config.get("objectives", []):
             agent_id = objective.get("agent")
             if objective.get("type") == "reach_position":
                 if agent_id is None:
                     raise ValueError("Objective of type 'reach_position' is missing 'agent'.")
+
                 setpoint = np.array(objective.get("target_pos", [0.0, 0.0, 0.0]), dtype=float)
-                # assign target to the matching agent (by index or by name)
+
+                # Sélection de l'agent : par index ou par nom
                 if isinstance(agent_id, int):
                     if 0 <= agent_id < len(self.agents):
-                        # prefer the explicit API if available
                         agent = self.agents[agent_id]
-                        if hasattr(agent, "set_target_position"):
-                            agent.set_target_position(setpoint)
-                        elif hasattr(agent, "set_target"):
-                            agent.set_target(setpoint)
-                        else:
-                            setattr(agent, "target_pos", setpoint)
                     else:
                         raise ValueError(f"Agent index {agent_id} out of range for objective.")
                 else:
-                    for agent in self.agents:
-                        if getattr(agent, "name", None) == agent_id:
-                            if hasattr(agent, "set_target_position"):
-                                agent.set_target_position(setpoint)
-                            elif hasattr(agent, "set_target"):
-                                agent.set_target(setpoint)
-                            else:
-                                setattr(agent, "target_pos", setpoint)
+                    agent = None
+                    for a in self.agents:
+                        if getattr(a, "name", None) == agent_id:
+                            agent = a
                             break
-                    else:
+                    if agent is None:
                         raise ValueError(f"No agent with name '{agent_id}' found for objective.")
+
+                # Si l'agent gère des waypoints, on les accumule
+                if hasattr(agent, "add_waypoint"):
+                    agent.add_waypoint(setpoint)
+                elif hasattr(agent, "set_target_position"):
+                    agent.set_target_position(setpoint)
+                elif hasattr(agent, "set_target"):
+                    agent.set_target(setpoint)
+                else:
+                    setattr(agent, "target_pos", setpoint)
 
         print(
             f"Scénario chargé : {len(self.agents)} drones, "
@@ -137,15 +134,12 @@ class SimulationManager:
     def run(self):
         """
         Boucle principale de simulation.
-        Chaque UAV lit sa cible dans self.target_pos.
+        Chaque UAV gère sa liste de waypoints en interne.
         """
         sim_time = 0.0
         max_time = float(self.config["simulation"]["max_sim_time"])
 
-        while (
-            sim_time < max_time
-            and p.isConnected(self.physics_client_id)
-        ):
+        while sim_time < max_time and p.isConnected(self.physics_client_id):
             # 1. Contrôle des drones
             for uav in self.agents:
                 uav.think_and_act()

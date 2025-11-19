@@ -1,3 +1,4 @@
+# entities/uav.py
 import pybullet as p
 import numpy as np
 
@@ -7,16 +8,18 @@ from Control.PID import PIDController
 
 class UAV(Agent):
     """
-    Drone avec contrôleur simple à base de PID sur la position :
-      - 3 PID (x, y, z) configurés dans config.yaml
-      - sortie des PID = accélération désirée
+    Drone contrôlé en position par PID (x, y, z) avec orientation "raisonnablement réaliste":
+      - PID sur x, y, z -> accélérations désirées dans le repère monde
       - force = m * (a_cmd + gravité) appliquée au centre de masse
-      - orientation figée (pas de rotation parasite)
+      - le drone tourne autour de z pour que son axe x pointe vers la cible
+      - il n'avance que lorsque l'axe x est suffisamment aligné
+      - il se penche vers l'avant (pitch) lorsqu'il avance, et reste droit en vol stationnaire
+      - plusieurs waypoints possibles (liste de positions à suivre)
     """
 
     def __init__(self, config: dict, physics_client_id: int, dt: float):
         self.config = config
-        self.dt = dt
+        self.dt = float(dt)
         self.physics_client_id = physics_client_id
         self.name = self.config.get("name", "unnamed_uav")
 
@@ -27,8 +30,13 @@ class UAV(Agent):
         start_pos = [float(v) for v in start_pos]
 
         start_orn_euler = self.config.get("start_orn_euler", [0.0, 0.0, 0.0])
+        start_orn_euler = [float(a) for a in start_orn_euler]
         start_orn_q = p.getQuaternionFromEuler(start_orn_euler)
-        self.initial_orn_q = start_orn_q  # orientation de référence
+
+        # Yaw initial
+        self.current_yaw = float(start_orn_euler[2])
+        self.current_roll = 0.0
+        self.current_pitch = 0.0
 
         # Charge l'URDF via la classe Agent
         super().__init__(
@@ -36,8 +44,9 @@ class UAV(Agent):
             start_pos=start_pos,
             start_orn_q=start_orn_q,
             physics_client_id=self.physics_client_id,
-            dt=dt,
+            dt=self.dt,
         )
+        self._create_body_frame_axes(axis_length=0.5)
 
         # ----------- Paramètres physiques -----------
         self.g = 9.81
@@ -47,6 +56,7 @@ class UAV(Agent):
         total_mass = p.getDynamicsInfo(
             self.bodyId, -1, physicsClientId=self.physics_client_id
         )[0] or 0.0
+
         for j in range(num_joints):
             mj = p.getDynamicsInfo(
                 self.bodyId, j, physicsClientId=self.physics_client_id
@@ -62,7 +72,7 @@ class UAV(Agent):
         # ----------- PID à partir du YAML -----------
         components_cfg = self.config.get("components", {})
 
-        def get_pid_cfg(name: str, fallback: dict | None = None) -> dict:
+        def get_pid_cfg(name: str, fallback: dict = None) -> dict:
             if name in components_cfg:
                 return components_cfg[name]
             if fallback is not None:
@@ -77,81 +87,222 @@ class UAV(Agent):
         cfg_x = get_pid_cfg("controller_x", fallback=cfg_z)
         cfg_y = get_pid_cfg("controller_y", fallback=cfg_z)
 
-        # limites pour l'intégrale (et comme référence de saturation)
-        self.acc_limit_xy = 5.0   # m/s^2 max en x/y
-        self.acc_limit_z  = 5.0   # m/s^2 max en z
+        # Limites d'accélération (x,y,z)
+        self.acc_limit_xy = float(self.config.get("acc_limit_xy", 5.0))  # m/s^2
+        self.acc_limit_z = float(self.config.get("acc_limit_z", 5.0))    # m/s^2
 
         self.pid_x = PIDController(self.acc_limit_xy, self.acc_limit_xy, cfg_x)
         self.pid_y = PIDController(self.acc_limit_xy, self.acc_limit_xy, cfg_y)
-        self.pid_z = PIDController(self.acc_limit_z,  self.acc_limit_z,  cfg_z)
+        self.pid_z = PIDController(self.acc_limit_z, self.acc_limit_z, cfg_z)
 
         # Limite de la force totale (en fonction du poids)
-        self.F_max = 2.5 * self.mass * self.g  # jusqu'à ~2.5 g
+        F_max_factor = float(self.config.get("F_max_factor", 2.5))
+        self.F_max = F_max_factor * self.mass * self.g
 
         # Zone morte autour de la cible (pour éviter les tremblements)
-        self.pos_tolerance = 0.05   # 5 cm
-        self.vel_tolerance = 0.05   # 5 cm/s
+        self.pos_tolerance = float(self.config.get("pos_tolerance", 0.05))  # 5 cm
+        self.vel_tolerance = float(self.config.get("vel_tolerance", 0.05))  # 5 cm/s
 
-        # Position cible
-        self.target_pos = np.array(
-            self.config.get("setpoint", start_pos), dtype=float
-        )
+        # ----------- Paramètres d'orientation "réaliste" -----------
+        # Alignement de l'axe x avec la direction cible
+        self.yaw_align_gain = float(self.config.get("yaw_align_gain", 4.0))
+        self.yaw_rate_max = float(
+            self.config.get("yaw_rate_max_deg", 120.0)
+        ) * np.pi / 180.0
+
+        # Seuil d'alignement : tant que |erreur_yaw| > seuil, on n'avance pas en x,y
+        self.yaw_align_threshold = float(
+            self.config.get("yaw_align_threshold_deg", 10.0)
+        ) * np.pi / 180.0
+
+        # Tilt visuel en fonction de la vitesse dans le repère drone
+        self.tilt_gain = float(self.config.get("tilt_gain", 0.4))
+        self.pitch_max = float(
+            self.config.get("pitch_max_deg", 35.0)
+        ) * np.pi / 180.0
+        self.roll_max = float(
+            self.config.get("roll_max_deg", 35.0)
+        ) * np.pi / 180.0
+
+        # Filtre pour lisser la rotation (0 -> très lissé, 1 -> pas lissé)
+        self.tilt_smoothing = float(self.config.get("tilt_smoothing", 0.5))
+        self.tilt_smoothing = np.clip(self.tilt_smoothing, 0.0, 1.0)
+
+        # ----------- Waypoints / cible -----------
+        # Option 1: waypoints définis dans le YAML (agents[i].waypoints)
+        wp_list = self.config.get("waypoints", None)
+        if wp_list is not None and len(wp_list) > 0:
+            self.waypoints = [np.array(w, dtype=float) for w in wp_list]
+        else:
+            # Option 2: un seul setpoint
+            default_target = self.config.get("setpoint", start_pos)
+            self.waypoints = [np.array(default_target, dtype=float)]
+
+        self.current_wp_idx = 0
 
         print(
-            f"UAV '{self.config.get('name', 'unnamed')}' chargé, "
-            f"bodyId={self.bodyId}, masse_totale={self.mass:.4f} kg"
+            f"UAV '{self.name}' chargé, bodyId={self.bodyId}, "
+            f"masse_totale={self.mass:.4f} kg, {len(self.waypoints)} waypoint(s)"
         )
 
     # ------------------------------------------------------------------
     def _initialize_components(self):
         """Pas de capteurs/estimateurs séparés pour ce contrôleur simple."""
         self.components = {}
+    def _create_body_frame_axes(self, axis_length: float = 0.3):
+        """
+        Affiche le repère local attaché au drone :
+          - X : rouge (avant)
+          - Y : vert (latéral)
+          - Z : bleu (vertical)
+        Les lignes sont attachées à la base (linkIndex = -1).
+        """
+        p.addUserDebugLine(
+            [0.0, 0.0, 0.0],
+            [axis_length, 0.0, 0.0],
+            [1.0, 0.0, 0.0],  # X rouge
+            parentObjectUniqueId=self.bodyId,
+            parentLinkIndex=-1,
+            physicsClientId=self.physics_client_id,
+        )
+
+        p.addUserDebugLine(
+            [0.0, 0.0, 0.0],
+            [0.0, axis_length, 0.0],
+            [0.0, 1.0, 0.0],  # Y vert
+            parentObjectUniqueId=self.bodyId,
+            parentLinkIndex=-1,
+            physicsClientId=self.physics_client_id,
+        )
+
+        p.addUserDebugLine(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, axis_length],
+            [0.0, 0.0, 1.0],  # Z bleu
+            parentObjectUniqueId=self.bodyId,
+            parentLinkIndex=-1,
+            physicsClientId=self.physics_client_id,
+        )
 
     # ------------------------------------------------------------------
     def set_target_pos(self, target):
-        """Changer la cible pendant la simu (optionnel)."""
-        self.target_pos = np.array(target, dtype=float)
+        """Compatibilité: remplace la liste de waypoints par une seule cible."""
+        self.waypoints = [np.array(target, dtype=float)]
+        self.current_wp_idx = 0
+
+    # ------------------------------------------------------------------
+    def set_waypoints(self, waypoints):
+        """Définir une liste de waypoints à suivre dans l'ordre."""
+        self.waypoints = [np.array(w, dtype=float) for w in waypoints]
+        if len(self.waypoints) == 0:
+            raise ValueError("set_waypoints() requiert au moins un point")
+        self.current_wp_idx = 0
+
+    # ------------------------------------------------------------------
+    def _get_active_target(self) -> np.ndarray:
+        """Retourne le waypoint courant."""
+        if self.current_wp_idx >= len(self.waypoints):
+            return self.waypoints[-1]
+        return self.waypoints[self.current_wp_idx]
+
+    # ------------------------------------------------------------------
+    def _update_waypoint_if_reached(self, pos: np.ndarray, vel: np.ndarray) -> None:
+        """Passe au waypoint suivant si on est proche et presque immobile."""
+        target = self._get_active_target()
+        e = target - pos
+        dist = float(np.linalg.norm(e))
+        speed = float(np.linalg.norm(vel))
+
+        if dist < self.pos_tolerance and speed < self.vel_tolerance:
+            if self.current_wp_idx < len(self.waypoints) - 1:
+                self.current_wp_idx += 1
 
     # ------------------------------------------------------------------
     def think_and_act(self, setpoint: np.ndarray | None = None):
         """
-        Contrôle de position avec PID (x, y, z) :
-          - tant qu'on est loin de la cible : on utilise les PID
-          - une fois proche et lent : on compense juste la gravité
-          - orientation figée pour éviter que le drone tourne sur lui-même
-          - si PyBullet est déconnecté -> on ne fait rien
+        Contrôle de position avec orientation réaliste:
+          - plusieurs waypoints possibles (self.waypoints)
+          - yaw pour aligner l'axe x vers le waypoint courant
+          - tant que l'axe x n'est pas aligné, pas d'accélération en x,y
+          - tilt (roll/pitch) en fonction de la vitesse dans le repère drone
         """
         # Si le serveur n'est plus connecté, on ne fait rien
         if not p.isConnected(self.physics_client_id):
             return
 
+        # Compatibilité: si on passe un setpoint, remplace les waypoints
         if setpoint is not None:
             self.set_target_pos(setpoint)
 
+        # 1. Vérité terrain
         try:
-            # 1. Vérité terrain
             state = self.get_ground_truth_state()
-            pos = state["pos"]    # [x, y, z]
-            vel = state["vel"]    # [vx, vy, vz]
         except p.error:
             return
 
-        # 2. Erreurs
-        e_pos = self.target_pos - pos        # erreur de position
-        e_vel = -vel                         # v_cible = 0
-        dist = np.linalg.norm(e_pos)
-        speed = np.linalg.norm(vel)
+        pos = state["pos"]      # [x, y, z] monde
+        vel = state["vel"]      # [vx, vy, vz] monde
 
-        # 3. Zone morte : si on est arrivé et quasi immobile
-        if dist < self.pos_tolerance and speed < self.vel_tolerance:
-            # On remet les PID à zéro pour éviter l'accumulation
+        # 2. Met à jour le waypoint actif si le courant est atteint
+        self._update_waypoint_if_reached(pos, vel)
+        target = self._get_active_target()
+
+        # Erreurs de position
+        e_pos = target - pos
+        dist = float(np.linalg.norm(e_pos))
+        speed3d = float(np.linalg.norm(vel))
+
+        # 3. Calcul du yaw désiré: axe x pointe vers le waypoint (projection au sol)
+        dir_world = e_pos.copy()
+        dir_world[2] = 0.0
+        norm_dir = float(np.linalg.norm(dir_world))
+        if norm_dir < 1e-6:
+            yaw_des = self.current_yaw
+        else:
+            yaw_des = float(np.arctan2(dir_world[1], dir_world[0]))
+
+        # Erreur de yaw dans [-pi, pi]
+        yaw_err = np.arctan2(
+            np.sin(yaw_des - self.current_yaw),
+            np.cos(yaw_des - self.current_yaw),
+        )
+
+        # 4. Mise à jour du yaw (1er ordre, saturé en vitesse angulaire)
+        yaw_rate_cmd = self.yaw_align_gain * yaw_err
+        yaw_rate_cmd = float(
+            np.clip(yaw_rate_cmd, -self.yaw_rate_max, self.yaw_rate_max)
+        )
+        self.current_yaw += yaw_rate_cmd * self.dt
+
+        # 5. Vitesse dans le repère drone (pour le tilt)
+        cy = np.cos(self.current_yaw)
+        sy = np.sin(self.current_yaw)
+
+        # base_x = [cos(yaw), sin(yaw), 0]
+        # base_y = [-sin(yaw), cos(yaw), 0]
+        v_forward = cy * vel[0] + sy * vel[1]
+        v_side = -sy * vel[0] + cy * vel[1]
+
+        # 6. Tilt désiré en fonction de la vitesse
+        #    - en avançant (v_forward > 0), on se penche vers l'avant (pitch < 0)
+        pitch_des = self.tilt_gain * v_forward
+        roll_des = self.tilt_gain * v_side
+
+        pitch_des = float(np.clip(pitch_des, -self.pitch_max, self.pitch_max))
+        roll_des = float(np.clip(roll_des, -self.roll_max, self.roll_max))
+
+        alpha = self.tilt_smoothing
+        self.current_pitch = (1.0 - alpha) * self.current_pitch + alpha * pitch_des
+        self.current_roll = (1.0 - alpha) * self.current_roll + alpha * roll_des
+
+        # 7. Contrôle de position (PID x,y,z)
+        if dist < self.pos_tolerance and speed3d < self.vel_tolerance:
+            # Arrivé et quasi immobile -> reset PID, juste compensation gravité
             self.pid_x.reset()
             self.pid_y.reset()
             self.pid_z.reset()
-            # Force uniquement pour tenir en l'air
-            F = np.array([0.0, 0.0, self.mass * self.g], dtype=float)
+            a_total = np.array([0.0, 0.0, self.g], dtype=float)
         else:
-            # 4. PID par axe -> accélérations désirées
             ex, ey, ez = e_pos
 
             ax_cmd = self.pid_x.compute(float(ex), self.dt)
@@ -161,20 +312,25 @@ class UAV(Agent):
             # Saturation des accélérations
             ax_cmd = float(np.clip(ax_cmd, -self.acc_limit_xy, self.acc_limit_xy))
             ay_cmd = float(np.clip(ay_cmd, -self.acc_limit_xy, self.acc_limit_xy))
-            az_cmd = float(np.clip(az_cmd, -self.acc_limit_z,  self.acc_limit_z))
+            az_cmd = float(np.clip(az_cmd, -self.acc_limit_z, self.acc_limit_z))
 
-            # 5. Ajout de la gravité sur Z
+            # Tant que l'axe x n'est pas bien aligné, on bloque x,y
+            if abs(yaw_err) > self.yaw_align_threshold:
+                ax_cmd = 0.0
+                ay_cmd = 0.0
+
+            # Ajout de la gravité sur Z
             a_total = np.array([ax_cmd, ay_cmd, az_cmd + self.g], dtype=float)
 
-            # 6. Force souhaitée
-            F = self.mass * a_total
+        # 8. Force souhaitée en repère monde
+        F = self.mass * a_total
 
-            # 7. Saturation de la force totale
-            norm_F = np.linalg.norm(F)
-            if norm_F > self.F_max:
-                F *= self.F_max / (norm_F + 1e-9)
+        # Saturation de la force totale
+        norm_F = float(np.linalg.norm(F))
+        if norm_F > self.F_max:
+            F *= self.F_max / (norm_F + 1e-9)
 
-        # 8. Application de la force + verrouillage orientation
+        # 9. Application de la force + mise à jour de l'orientation
         if not p.isConnected(self.physics_client_id):
             return
 
@@ -182,41 +338,47 @@ class UAV(Agent):
             # appliquer la force au centre de masse
             p.applyExternalForce(
                 objectUniqueId=self.bodyId,
-                linkIndex=-1,               # base
+                linkIndex=-1,  # base
                 forceObj=F.tolist(),
                 posObj=[0.0, 0.0, 0.0],
                 flags=p.WORLD_FRAME,
                 physicsClientId=self.physics_client_id,
             )
 
-            # Verrouiller l'orientation + annuler la rotation
-            cur_pos, cur_orn = p.getBasePositionAndOrientation(
+            # Orientation: roll/pitch/yaw calculés ci-dessus
+            orn_q = p.getQuaternionFromEuler(
+                [self.current_roll, self.current_pitch, self.current_yaw]
+            )
+
+            cur_pos, _ = p.getBasePositionAndOrientation(
                 self.bodyId, physicsClientId=self.physics_client_id
             )
-            lin_vel, ang_vel = p.getBaseVelocity(
+            lin_vel, _ = p.getBaseVelocity(
                 self.bodyId, physicsClientId=self.physics_client_id
             )
 
             p.resetBasePositionAndOrientation(
                 self.bodyId,
                 cur_pos,
-                self.initial_orn_q,
+                orn_q,
                 physicsClientId=self.physics_client_id,
             )
 
+            # On annule la vitesse angulaire pour éviter les rotations parasites
             p.resetBaseVelocity(
                 self.bodyId,
                 linearVelocity=lin_vel,
                 angularVelocity=[0.0, 0.0, 0.0],
                 physicsClientId=self.physics_client_id,
             )
+
         except p.error:
             return
 
     # ------------------------------------------------------------------
     def apply_physics(self, *args, **kwargs):
         """
-        Avec ce contrôleur simple, toute la physique est gérée dans think_and_act(),
-        donc cette méthode ne fait rien. On la garde pour compatibilité.
+        Toute la logique de contrôle est dans think_and_act(),
+        on garde cette méthode pour compatibilité.
         """
         pass
