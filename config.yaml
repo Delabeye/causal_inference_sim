@@ -11,6 +11,10 @@ simulation:
   # Durée maximale de la simulation en secondes
   max_sim_time: 60.0
 
+  # world bounds
+  world_bounds= {"x": [-30, 30],
+                 "y": [-30, 30],
+                 "z": [0, 30]}
 # Gravité
 physics:
   gravity: [0.0, 0.0, -9.81]
@@ -125,5 +129,8 @@ agents:
         windup: 1.0
 
        
-
+RRT3DPlanner:
+        step_size: 1.0
+        max_iter: 1000
+        goal_sample_rate: 0.1
 
