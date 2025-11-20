@@ -139,7 +139,7 @@ class LidarSensor(Sensor):
         if self.angle_resolution <= 0:
             self.angle_resolution = 1.0
         
-    def measure(self, sensor_position: np.ndarray):
+    def measure(self, sensor_position: np.ndarray, sensor_orientation: np.ndarray) -> list[np.ndarray]:
         """
         Simule un lidar 2D à 360° autour du capteur.
         sensor_position : np.array([x, y, z])

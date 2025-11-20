@@ -5,7 +5,7 @@ import numpy as np
 from entities.agent import Agent
 from Control.PID import PIDController
 from entities.sensor import GPSSensor, IMUSensor, LidarSensor
-
+from Control.Path_planning import RRT3DPlanner
 
 class UAV(Agent):
     """
@@ -48,6 +48,9 @@ class UAV(Agent):
             dt=self.dt,
         )
         self._create_body_frame_axes(axis_length=0.5)
+
+        #obstacle list
+        self.detected_obstacles = []
 
         # ----------- Paramètres physiques -----------
         self.g = 9.81
@@ -245,6 +248,32 @@ class UAV(Agent):
         if dist < self.pos_tolerance and speed < self.vel_tolerance:
             if self.current_wp_idx < len(self.waypoints) - 1:
                 self.current_wp_idx += 1
+
+    # ------------------------------------------------------------------
+    def get_checkpoints(self,meas_pos: np.ndarray) -> list[np.ndarray]:
+        """Retourne la liste des checpoints"""
+        checkpoints = RRT3DPlanner.plan(meas_pos, self.waypoints[self.current_wp_idx],self.detected_obstacles)
+        return checkpoints
+    
+    # ------------------------------------------------------------------
+    def get_lidar_data(self):
+        """Retourne les données du lidar sous forme de liste de distances."""
+        if self.lidar_sensor is not None:
+            # Obtenir la position et l'orientation actuelles du drone
+            pos, orn_q = p.getBasePositionAndOrientation(
+                self.bodyId, physicsClientId=self.physics_client_id
+            )
+            orn_euler = p.getEulerFromQuaternion(orn_q)
+
+            # Mesurer avec le lidar
+            obstacles = self.lidar_sensor.measure(
+                position=np.array(pos, dtype=float),
+                orientation_euler=np.array(orn_euler, dtype=float)
+            )
+            return obstacles    
+        else:
+            return None
+    
 
     # ------------------------------------------------------------------
     def think_and_act(self, setpoint: np.ndarray | None = None):

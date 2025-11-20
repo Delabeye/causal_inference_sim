@@ -95,6 +95,10 @@ agents:
         gyro_noise_std: 0.03
         gravity: 9.81
 
+      lidar:
+        max_distance: 5.0
+        angle_resolution: 1.0   # en degrés
+
     components:
       controller_x:
         type: "pid"
@@ -119,5 +123,7 @@ agents:
           Ki: 0.0
           Kd: 4.0
         windup: 1.0
+
+       
 
 
