@@ -1,49 +1,121 @@
 import numpy as np
 import pybullet as p
 
+
 class Sensor:
-    """Classe de base pour les capteurs (identique à votre PDF )."""
+    """Classe de base pour les capteurs."""
     def __init__(self):
         pass
-        
+
     def measure(self, *args, **kwargs):
-        raise NotImplementedError("La méthode 'measure' doit être implémentée par la sous-classe")
+        raise NotImplementedError("La méthode 'measure' doit être implémentée.")
+
 
 class GPSSensor(Sensor):
     """
-    Capteur GPS qui lit ses paramètres depuis un objet config.
+    Capteur GPS simple :
+      - position_noise_std : écart-type du bruit sur la position (m)
+      - velocity_noise_std : écart-type du bruit sur la vitesse (m/s)
     """
-    def __init__(self, config):
-        """
-        Initialise le capteur GPS.
-        'config' est un dictionnaire, par ex:
-        {'position_noise_std': 0.05, 'velocity_noise_std': 0.02}
-        """
-        super().__init__()
-        
-        # Lit les paramètres depuis l'objet config
-        self.pos_noise_std = float(config.get('position_noise_std', 0.0))
-        self.vel_noise_std = float(config.get('velocity_noise_std', 0.0))
 
-        if self.pos_noise_std < 0:
-            self.pos_noise_std = 0
-        if self.vel_noise_std < 0:
-            self.vel_noise_std = 0
-            
-    def measure(self,
-                ground_truth_position: np.ndarray,
-                ground_truth_velocity: np.ndarray
-                ) -> tuple[np.ndarray, np.ndarray]:
-        
-        # (Code identique à votre PDF )
+    def __init__(self, config: dict):
+        super().__init__()
+
+        self.pos_noise_std = float(config.get("position_noise_std", 0.0))
+        self.vel_noise_std = float(config.get("velocity_noise_std", 0.0))
+
+        if self.pos_noise_std < 0.0:
+            self.pos_noise_std = 0.0
+        if self.vel_noise_std < 0.0:
+            self.vel_noise_std = 0.0
+
+    def measure(
+        self,
+        ground_truth_position: np.ndarray,
+        ground_truth_velocity: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Renvoie (position_mesurée, vitesse_mesurée) avec bruit gaussien.
+        """
         pos_noise = np.random.normal(0.0, self.pos_noise_std, 3)
         vel_noise = np.random.normal(0.0, self.vel_noise_std, 3)
-        
-        measured_position = ground_truth_position + pos_noise
-        measured_velocity = ground_truth_velocity + vel_noise
-        
-        return measured_position, measured_velocity
-    
+
+        meas_pos = ground_truth_position + pos_noise
+        meas_vel = ground_truth_velocity + vel_noise
+
+        return meas_pos, meas_vel
+
+
+class IMUSensor(Sensor):
+    """
+    IMU simplifiée :
+      - accéléromètre : mesure la force spécifique en repère body (a - g)
+      - gyroscope : mesure la vitesse angulaire en repère body
+
+    config :
+      - accel_noise_std : écart-type bruit accel (m/s^2)
+      - gyro_noise_std  : écart-type bruit gyro (rad/s)
+      - gravity         : norme de la gravité (par défaut 9.81)
+    """
+
+    def __init__(self, config: dict):
+        super().__init__()
+
+        self.accel_noise_std = float(config.get("accel_noise_std", 0.0))
+        self.gyro_noise_std = float(config.get("gyro_noise_std", 0.0))
+        self.gravity = float(config.get("gravity", 9.81))
+
+        self._prev_vel = np.zeros(3, dtype=float)
+        self._initialized = False
+
+    def measure(
+        self,
+        ground_truth_position: np.ndarray,
+        ground_truth_orientation: np.ndarray,
+        ground_truth_velocity: np.ndarray,
+        ground_truth_ang_vel: np.ndarray,
+        dt: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Renvoie (specific_force_body, gyro_body).
+
+        - specific_force_body ≈ R^T (a_world - g_world)
+        - gyro_body ≈ vitesse angulaire fournie par PyBullet (approx)
+        """
+        if dt <= 0.0:
+            dt = 1e-6
+
+        v = np.array(ground_truth_velocity, dtype=float)
+
+        if not self._initialized:
+            a_world = np.zeros(3, dtype=float)
+            self._initialized = True
+        else:
+            a_world = (v - self._prev_vel) / dt
+
+        self._prev_vel = v
+
+        # Gravité en repère monde
+        g_world = np.array([0.0, 0.0, -self.gravity], dtype=float)
+
+        # Force spécifique en repère monde
+        f_world = a_world - g_world
+
+        # Rotation monde -> body via quaternion
+        q = ground_truth_orientation  # [x, y, z, w]
+        rot_mat = np.array(p.getMatrixFromQuaternion(q)).reshape(3, 3)
+        f_body = rot_mat.T @ f_world
+
+        # Vitesse angulaire (on la prend telle quelle, approx body)
+        omega_body = np.array(ground_truth_ang_vel, dtype=float)
+
+        # Bruits
+        if self.accel_noise_std > 0.0:
+            f_body = f_body + np.random.normal(0.0, self.accel_noise_std, 3)
+        if self.gyro_noise_std > 0.0:
+            omega_body = omega_body + np.random.normal(0.0, self.gyro_noise_std, 3)
+
+        return f_body, omega_body
 
 class LidarSensor(Sensor):
     """

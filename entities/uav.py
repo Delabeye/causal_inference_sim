@@ -4,6 +4,7 @@ import numpy as np
 
 from entities.agent import Agent
 from Control.PID import PIDController
+from entities.sensor import GPSSensor, IMUSensor
 
 
 class UAV(Agent):
@@ -15,6 +16,7 @@ class UAV(Agent):
       - il n'avance que lorsque l'axe x est suffisamment aligné
       - il se penche vers l'avant (pitch) lorsqu'il avance, et reste droit en vol stationnaire
       - plusieurs waypoints possibles (liste de positions à suivre)
+      - capteurs GPS / IMU optionnels (mesurent mais ne modifient pas le contrôle)
     """
 
     def __init__(self, config: dict, physics_client_id: int, dt: float):
@@ -129,12 +131,10 @@ class UAV(Agent):
         self.tilt_smoothing = np.clip(self.tilt_smoothing, 0.0, 1.0)
 
         # ----------- Waypoints / cible -----------
-        # Option 1: waypoints définis dans le YAML (agents[i].waypoints)
         wp_list = self.config.get("waypoints", None)
         if wp_list is not None and len(wp_list) > 0:
             self.waypoints = [np.array(w, dtype=float) for w in wp_list]
         else:
-            # Option 2: un seul setpoint
             default_target = self.config.get("setpoint", start_pos)
             self.waypoints = [np.array(default_target, dtype=float)]
 
@@ -147,8 +147,31 @@ class UAV(Agent):
 
     # ------------------------------------------------------------------
     def _initialize_components(self):
-        """Pas de capteurs/estimateurs séparés pour ce contrôleur simple."""
+        """Initialise les capteurs si définis dans le YAML."""
         self.components = {}
+
+        sensors_cfg = self.config.get("sensors", {})
+
+        # GPS
+        gps_cfg = sensors_cfg.get("gps", {})
+        if gps_cfg.get("enabled", False):
+            self.gps = GPSSensor(gps_cfg)
+            self.components["gps"] = self.gps
+        else:
+            self.gps = None
+
+        # IMU
+        imu_cfg = sensors_cfg.get("imu", {})
+        if imu_cfg.get("enabled", False):
+            self.imu = IMUSensor(imu_cfg)
+            self.components["imu"] = self.imu
+        else:
+            self.imu = None
+
+        # Pour log / debug
+        self.last_gps_meas = None   # (pos, vel)
+        self.last_imu_meas = None   # (specific_force_body, gyro_body)
+
     def _create_body_frame_axes(self, axis_length: float = 0.3):
         """
         Affiche le repère local attaché au drone :
@@ -225,6 +248,7 @@ class UAV(Agent):
           - yaw pour aligner l'axe x vers le waypoint courant
           - tant que l'axe x n'est pas aligné, pas d'accélération en x,y
           - tilt (roll/pitch) en fonction de la vitesse dans le repère drone
+          - GPS/IMU mesurés mais NON utilisés pour le contrôle
         """
         # Si le serveur n'est plus connecté, on ne fait rien
         if not p.isConnected(self.physics_client_id):
@@ -242,8 +266,29 @@ class UAV(Agent):
 
         pos = state["pos"]      # [x, y, z] monde
         vel = state["vel"]      # [vx, vy, vz] monde
+        orn_q = state["orn_q"]
+        ang_vel = state["ang_vel"]
 
-        # 2. Met à jour le waypoint actif si le courant est atteint
+        # 2. Mesures capteurs (pour info / logging)
+        if self.gps is not None:
+            meas_pos, meas_vel = self.gps.measure(pos, vel)
+            self.last_gps_meas = (meas_pos, meas_vel)
+        else:
+            self.last_gps_meas = None
+
+        if self.imu is not None:
+            specific_force_body, gyro_body = self.imu.measure(
+                ground_truth_position=pos,
+                ground_truth_orientation=orn_q,
+                ground_truth_velocity=vel,
+                ground_truth_ang_vel=ang_vel,
+                dt=self.dt,
+            )
+            self.last_imu_meas = (specific_force_body, gyro_body)
+        else:
+            self.last_imu_meas = None
+
+        # 3. Met à jour le waypoint actif si le courant est atteint
         self._update_waypoint_if_reached(pos, vel)
         target = self._get_active_target()
 
@@ -252,7 +297,7 @@ class UAV(Agent):
         dist = float(np.linalg.norm(e_pos))
         speed3d = float(np.linalg.norm(vel))
 
-        # 3. Calcul du yaw désiré: axe x pointe vers le waypoint (projection au sol)
+        # 4. Calcul du yaw désiré: axe x pointe vers le waypoint (projection au sol)
         dir_world = e_pos.copy()
         dir_world[2] = 0.0
         norm_dir = float(np.linalg.norm(dir_world))
@@ -267,24 +312,21 @@ class UAV(Agent):
             np.cos(yaw_des - self.current_yaw),
         )
 
-        # 4. Mise à jour du yaw (1er ordre, saturé en vitesse angulaire)
+        # 5. Mise à jour du yaw (1er ordre, saturé en vitesse angulaire)
         yaw_rate_cmd = self.yaw_align_gain * yaw_err
         yaw_rate_cmd = float(
             np.clip(yaw_rate_cmd, -self.yaw_rate_max, self.yaw_rate_max)
         )
         self.current_yaw += yaw_rate_cmd * self.dt
 
-        # 5. Vitesse dans le repère drone (pour le tilt)
+        # 6. Vitesse dans le repère drone (pour le tilt)
         cy = np.cos(self.current_yaw)
         sy = np.sin(self.current_yaw)
 
-        # base_x = [cos(yaw), sin(yaw), 0]
-        # base_y = [-sin(yaw), cos(yaw), 0]
         v_forward = cy * vel[0] + sy * vel[1]
         v_side = -sy * vel[0] + cy * vel[1]
 
-        # 6. Tilt désiré en fonction de la vitesse
-        #    - en avançant (v_forward > 0), on se penche vers l'avant (pitch < 0)
+        # Tilt désiré en fonction de la vitesse
         pitch_des = self.tilt_gain * v_forward
         roll_des = self.tilt_gain * v_side
 
@@ -295,7 +337,7 @@ class UAV(Agent):
         self.current_pitch = (1.0 - alpha) * self.current_pitch + alpha * pitch_des
         self.current_roll = (1.0 - alpha) * self.current_roll + alpha * roll_des
 
-        # 7. Contrôle de position (PID x,y,z)
+        # 7. Contrôle de position (PID x,y,z) -> accélérations désirées
         if dist < self.pos_tolerance and speed3d < self.vel_tolerance:
             # Arrivé et quasi immobile -> reset PID, juste compensation gravité
             self.pid_x.reset()
