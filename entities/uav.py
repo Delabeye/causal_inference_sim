@@ -4,7 +4,7 @@ import numpy as np
 
 from entities.agent import Agent
 from Control.PID import PIDController
-from entities.sensor import GPSSensor, IMUSensor
+from entities.sensor import GPSSensor, IMUSensor, LidarSensor
 
 
 class UAV(Agent):
@@ -170,6 +170,13 @@ class UAV(Agent):
         # Pour log / debug
         self.last_gps_meas = None   # (pos, vel)
         self.last_imu_meas = None   # (specific_force_body, gyro_body)
+
+        # Lidar
+        self.lidar_sensor = LidarSensor(self.config['sensors']['lidar']['max_distance'],
+                                   self.config['sensors']['lidar']['angle_resolution'])
+        
+        self.components["lidar_sensor"] = self.lidar_sensor
+
 
     def _create_body_frame_axes(self, axis_length: float = 0.3):
         """
