@@ -13,7 +13,6 @@ class UAV(Agent):
       - PID sur x, y, z -> accélérations désirées dans le repère monde
       - force = m * (a_cmd + gravité) appliquée au centre de masse
       - le drone tourne autour de z pour que son axe x pointe vers la cible
-      - il n'avance que lorsque l'axe x est suffisamment aligné
       - il se penche vers l'avant (pitch) lorsqu'il avance, et reste droit en vol stationnaire
       - plusieurs waypoints possibles (liste de positions à suivre)
       - capteurs GPS / IMU optionnels (mesurent mais ne modifient pas le contrôle)
