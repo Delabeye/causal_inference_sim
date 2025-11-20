@@ -9,20 +9,17 @@ class RRTNode:
 class RRT3DPlanner:
     def __init__(
             self,
-            bounds,
-            step_size=1.0,
-            max_iter=3000,
-            safe_distance=1.0
+            config: dict,
         ):
         """
         bounds: dict { "x": (xmin, xmax), "y": (...), "z": (...) }
         step_size: distance step RRT per extension
         safe_distance : distance min par rapport à tout obstacle
         """
-        self.bounds = bounds
-        self.step_size = step_size
-        self.max_iter = max_iter
-        self.safe_distance = safe_distance
+        self.bounds = config.get("world_bounds")
+        self.step_size = config.get("step_size", 1.0)
+        self.max_iter = config.get("max_iter", 3000)
+        self.safe_distance = config.get("safe_distance", 1.0)
 
     # -------------------------------------------------------------
     # Utilitaires
