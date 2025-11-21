@@ -73,6 +73,8 @@ class UAV(Agent):
 
         self.mass = float(total_mass)
 
+        self.path_planner = RRT3DPlanner(self.config.get("RRT3DPlanner", {}))
+
         # ----------- PID à partir du YAML -----------
         components_cfg = self.config.get("components", {})
 
@@ -250,25 +252,21 @@ class UAV(Agent):
                 self.current_wp_idx += 1
 
     # ------------------------------------------------------------------
-    def get_checkpoints(self,meas_pos: np.ndarray) -> list[np.ndarray]:
+    def get_checkpoints(self, meas_pos: np.ndarray) -> list[np.ndarray]:
         """Retourne la liste des checpoints"""
-        checkpoints = RRT3DPlanner.plan(meas_pos, self.waypoints[self.current_wp_idx],self.detected_obstacles)
+        checkpoints = self.path_planner.plan(meas_pos, self.waypoints[self.current_wp_idx],self.detected_obstacles)
         return checkpoints
     
     # ------------------------------------------------------------------
-    def get_lidar_data(self):
+    def get_lidar_data(self,pos : np.ndarray, roll: float, yaw: float, pitch: float) -> list[np.ndarray]:
         """Retourne les données du lidar sous forme de liste de distances."""
         if self.lidar_sensor is not None:
-            # Obtenir la position et l'orientation actuelles du drone
-            pos, orn_q = p.getBasePositionAndOrientation(
-                self.bodyId, physicsClientId=self.physics_client_id
-            )
-            orn_euler = p.getEulerFromQuaternion(orn_q)
-
             # Mesurer avec le lidar
             obstacles = self.lidar_sensor.measure(
-                position=np.array(pos, dtype=float),
-                orientation_euler=np.array(orn_euler, dtype=float)
+                pos,
+                roll,
+                yaw,
+                pitch
             )
             return obstacles    
         else:
@@ -325,10 +323,15 @@ class UAV(Agent):
 
         # 3. Met à jour le waypoint actif si le courant est atteint
         self._update_waypoint_if_reached(pos, vel)
-        target = self._get_active_target()
+        self.target = self._get_active_target()
 
+        #checkpoints
+        self.detected_obstacles += self.get_lidar_data(pos, self.current_roll, self.current_yaw, self.current_pitch)
+        print("Detected obstacles:", len(self.detected_obstacles))
+        #checkpoints = self.get_checkpoints(np.array(pos,dtype=float))
+        #active_target = checkpoints
         # Erreurs de position
-        e_pos = target - pos
+        e_pos = self.target - pos
         dist = float(np.linalg.norm(e_pos))
         speed3d = float(np.linalg.norm(vel))
 
