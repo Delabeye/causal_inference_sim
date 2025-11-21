@@ -122,7 +122,7 @@ class LidarSensor(Sensor):
     """
     Capteur LIDAR qui lit ses paramètres depuis un objet config.    
     """
-    def __init__(self, config):
+    def __init__(self, max_distance: float, angle_resolution: float):
 
         """
         Initialise le capteur LIDAR.
@@ -132,8 +132,8 @@ class LidarSensor(Sensor):
         super().__init__()
         
         # Lit les paramètres depuis l'objet config
-        self.max_distance = float(config.get('max_distance', 100.0))
-        self.angle_resolution = float(config.get('angle_resolution', 1.0))
+        self.max_distance = max_distance
+        self.angle_resolution = angle_resolution
 
         if self.max_distance <= 0:
             self.max_distance = 100.0
@@ -147,7 +147,7 @@ class LidarSensor(Sensor):
         """
         obstacles_positions = []
         num_measurements = int(360 / self.angle_resolution)
-        
+        sensor_position[2] += 0.01
 
         for i in range(num_measurements):
             angle_deg = i * self.angle_resolution
@@ -181,9 +181,9 @@ class LidarSensor(Sensor):
             # result structure :
             # (objectUniqueId, linkIndex, hit_fraction, hit_position, hit_normal)
 
-            hit_id = result[0]
+            hit_id = result[0][0]
 
             if hit_id != -1:
-                obstacles_positions.append(np.array(result[3]))
+                obstacles_positions.append(np.array(result[0][3], dtype=float))
     
         return obstacles_positions  

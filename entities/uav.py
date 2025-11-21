@@ -99,6 +99,8 @@ class UAV(Agent):
 
         self.mass = float(total_mass)
 
+        self.path_planner = RRT3DPlanner(self.config.get("RRT3DPlanner", {}))
+
         # ----------- PID à partir du YAML -----------
         components_cfg = self.config.get("components", {})
 
@@ -423,10 +425,15 @@ class UAV(Agent):
 
         # 3. Met à jour le waypoint actif si le courant est atteint (VÉRITÉ terrain)
         self._update_waypoint_if_reached(pos, vel)
-        target = self._get_active_target()
+        self.target = self._get_active_target()
 
-        # Erreurs de position (pour le contrôle)
-        e_pos = target - pos
+        #checkpoints
+        self.detected_obstacles += self.get_lidar_data(pos, self.current_roll, self.current_yaw, self.current_pitch)
+        print("Detected obstacles:", len(self.detected_obstacles))
+        #checkpoints = self.get_checkpoints(np.array(pos,dtype=float))
+        #active_target = checkpoints
+        # Erreurs de position
+        e_pos = self.target - pos
         dist = float(np.linalg.norm(e_pos))
         speed3d = float(np.linalg.norm(vel))
 
