@@ -100,7 +100,6 @@ agents:
         gyro_noise_std: 0.03
         gravity: 9.81
 
-<<<<<<< HEAD
       ekf:
         enabled: true
         q_pos: 0.01       # cohérent avec ce qu'on a mis dans le code
@@ -109,11 +108,6 @@ agents:
     use_ekf_for_control: true
     ekf_blend_alpha: 0.3   # commencer vers 0.2–0.4
     ekf_max_jump: 2.0      # ignore les sauts > 2 m par pas
-=======
-      lidar:
-        max_distance: 5.0
-        angle_resolution: 1.0   # en degrés
->>>>>>> 65380a615679b224a3abb70dcf4d758792e9ec1f
 
     components:
       controller_x:
