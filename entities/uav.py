@@ -1,10 +1,12 @@
-# entities/uav.py
+import os
+import csv
 import pybullet as p
 import numpy as np
 
 from entities.agent import Agent
 from Control.PID import PIDController
 from entities.sensor import GPSSensor, IMUSensor
+from Control.EKF import GPSEKF  # EKF pour analyse/log uniquement
 
 
 class UAV(Agent):
@@ -15,7 +17,9 @@ class UAV(Agent):
       - le drone tourne autour de z pour que son axe x pointe vers la cible
       - il se penche vers l'avant (pitch) lorsqu'il avance, et reste droit en vol stationnaire
       - plusieurs waypoints possibles (liste de positions à suivre)
-      - capteurs GPS / IMU optionnels (mesurent mais ne modifient pas le contrôle)
+      - capteurs GPS / IMU optionnels
+      - EKF optionnel pour ANALYSE (ne modifie PAS le contrôle)
+      - LOG optionnel vers un fichier CSV (vérité / GPS / EKF)
     """
 
     def __init__(self, config: dict, physics_client_id: int, dt: float):
@@ -23,6 +27,28 @@ class UAV(Agent):
         self.dt = float(dt)
         self.physics_client_id = physics_client_id
         self.name = self.config.get("name", "unnamed_uav")
+
+        # ----------- EKF (analyse uniquement) -----------
+        self.ekf = None
+        self.last_ekf_state = None  # (pos_est, vel_est)
+
+        # ----------- Logging -----------
+        log_cfg = self.config.get("logging", {})
+        self.logging_enabled = bool(log_cfg.get("enabled", False))
+        self.log_file_path = None
+        self._sim_time = 0.0
+
+        if self.logging_enabled:
+            log_dir = log_cfg.get("dir", "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            base_name = log_cfg.get("file", f"{self.name}_log.csv")
+            self.log_file_path = os.path.join(log_dir, base_name)
+            # On réinitialise le fichier s'il existe
+            if os.path.isfile(self.log_file_path):
+                os.remove(self.log_file_path)
+            print(f"[{self.name}] Logging activé -> {self.log_file_path}")
+        else:
+            print(f"[{self.name}] Logging désactivé")
 
         # ----------- Pose initiale -----------
         urdf_path = self.config["urdf_path"]
@@ -146,7 +172,7 @@ class UAV(Agent):
 
     # ------------------------------------------------------------------
     def _initialize_components(self):
-        """Initialise les capteurs si définis dans le YAML."""
+        """Initialise les capteurs + EKF (pour analyse) si définis dans le YAML."""
         self.components = {}
 
         sensors_cfg = self.config.get("sensors", {})
@@ -167,9 +193,35 @@ class UAV(Agent):
         else:
             self.imu = None
 
+        # EKF (optionnel, pour analyse uniquement)
+        ekf_cfg = sensors_cfg.get("ekf", {})
+        if self.gps is not None and ekf_cfg.get("enabled", False):
+            q_pos = float(ekf_cfg.get("q_pos", 0.05))
+            q_vel = float(ekf_cfg.get("q_vel", 0.10))
+            # on prend par défaut le bruit GPS si R non spécifié
+            r_pos = float(ekf_cfg.get("r_pos", gps_cfg.get("position_noise_std", 0.1)))
+            r_vel = float(ekf_cfg.get("r_vel", gps_cfg.get("velocity_noise_std", 0.05)))
+
+            self.ekf = GPSEKF(
+                dt=self.dt,
+                q_pos=q_pos,
+                q_vel=q_vel,
+                r_pos=r_pos,
+                r_vel=r_vel,
+            )
+            self.components["ekf"] = self.ekf
+            print(
+                f"[{self.name}] EKF initialisé (analyse uniquement) "
+                f"(q_pos={q_pos}, q_vel={q_vel}, r_pos={r_pos}, r_vel={r_vel})"
+            )
+        else:
+            self.ekf = None
+            print(f"[{self.name}] EKF désactivé")
+
         # Pour log / debug
         self.last_gps_meas = None   # (pos, vel)
         self.last_imu_meas = None   # (specific_force_body, gyro_body)
+        self.last_ekf_state = None  # (pos_est, vel_est)
 
     def _create_body_frame_axes(self, axis_length: float = 0.3):
         """
@@ -240,6 +292,68 @@ class UAV(Agent):
                 self.current_wp_idx += 1
 
     # ------------------------------------------------------------------
+    def _log_state(self, pos_true, vel_true):
+        """Enregistre dans le CSV : vérité, GPS, EKF (si logging activé)."""
+        if not self.logging_enabled or self.log_file_path is None:
+            return
+
+        # Par défaut, NaN si mesure absente
+        x_gps = y_gps = z_gps = np.nan
+        vx_gps = vy_gps = vz_gps = np.nan
+        x_ekf = y_ekf = z_ekf = np.nan
+        vx_ekf = vy_ekf = vz_ekf = np.nan
+
+        gps_enabled = 1 if self.gps is not None else 0
+        ekf_enabled = 1 if self.ekf is not None else 0
+
+        if self.last_gps_meas is not None:
+            gps_pos, gps_vel = self.last_gps_meas
+            gps_pos = np.asarray(gps_pos, dtype=float)
+            gps_vel = np.asarray(gps_vel, dtype=float)
+            x_gps, y_gps, z_gps = gps_pos.tolist()
+            vx_gps, vy_gps, vz_gps = gps_vel.tolist()
+
+        if self.last_ekf_state is not None:
+            ekf_pos, ekf_vel = self.last_ekf_state
+            ekf_pos = np.asarray(ekf_pos, dtype=float)
+            ekf_vel = np.asarray(ekf_vel, dtype=float)
+            x_ekf, y_ekf, z_ekf = ekf_pos.tolist()
+            vx_ekf, vy_ekf, vz_ekf = ekf_vel.tolist()
+
+        row = {
+            "t": self._sim_time,
+            "x_true": float(pos_true[0]),
+            "y_true": float(pos_true[1]),
+            "z_true": float(pos_true[2]),
+            "vx_true": float(vel_true[0]),
+            "vy_true": float(vel_true[1]),
+            "vz_true": float(vel_true[2]),
+            "x_gps": x_gps,
+            "y_gps": y_gps,
+            "z_gps": z_gps,
+            "vx_gps": vx_gps,
+            "vy_gps": vy_gps,
+            "vz_gps": vz_gps,
+            "x_ekf": x_ekf,
+            "y_ekf": y_ekf,
+            "z_ekf": z_ekf,
+            "vx_ekf": vx_ekf,
+            "vy_ekf": vy_ekf,
+            "vz_ekf": vz_ekf,
+            "gps_enabled": gps_enabled,
+            "ekf_enabled": ekf_enabled,
+        }
+
+        file_exists = os.path.isfile(self.log_file_path)
+        fieldnames = list(row.keys())
+
+        with open(self.log_file_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+
+    # ------------------------------------------------------------------
     def think_and_act(self, setpoint: np.ndarray | None = None):
         """
         Contrôle de position avec orientation réaliste:
@@ -247,7 +361,8 @@ class UAV(Agent):
           - yaw pour aligner l'axe x vers le waypoint courant
           - tant que l'axe x n'est pas aligné, pas d'accélération en x,y
           - tilt (roll/pitch) en fonction de la vitesse dans le repère drone
-          - GPS/IMU mesurés mais NON utilisés pour le contrôle
+          - GPS/IMU/EKF mesurés mais NON utilisés pour le contrôle
+          - logging du GT/GPS/EKF vers un CSV
         """
         # Si le serveur n'est plus connecté, on ne fait rien
         if not p.isConnected(self.physics_client_id):
@@ -268,12 +383,21 @@ class UAV(Agent):
         orn_q = state["orn_q"]
         ang_vel = state["ang_vel"]
 
-        # 2. Mesures capteurs (pour info / logging)
+        # 2. Mesures capteurs (pour info / logging / EKF)
         if self.gps is not None:
             meas_pos, meas_vel = self.gps.measure(pos, vel)
             self.last_gps_meas = (meas_pos, meas_vel)
+
+            # EKF : estimation pour analyse (ne modifie pas le contrôle)
+            if self.ekf is not None:
+                est_pos, est_vel = self.ekf.step(
+                    np.asarray(meas_pos, dtype=float),
+                    np.asarray(meas_vel, dtype=float),
+                )
+                self.last_ekf_state = (est_pos, est_vel)
         else:
             self.last_gps_meas = None
+            self.last_ekf_state = None
 
         if self.imu is not None:
             specific_force_body, gyro_body = self.imu.measure(
@@ -287,11 +411,11 @@ class UAV(Agent):
         else:
             self.last_imu_meas = None
 
-        # 3. Met à jour le waypoint actif si le courant est atteint
+        # 3. Met à jour le waypoint actif si le courant est atteint (VÉRITÉ terrain)
         self._update_waypoint_if_reached(pos, vel)
         target = self._get_active_target()
 
-        # Erreurs de position
+        # Erreurs de position (pour le contrôle)
         e_pos = target - pos
         dist = float(np.linalg.norm(e_pos))
         speed3d = float(np.linalg.norm(vel))
@@ -318,7 +442,7 @@ class UAV(Agent):
         )
         self.current_yaw += yaw_rate_cmd * self.dt
 
-        # 6. Vitesse dans le repère drone (pour le tilt)
+        # 6. Vitesse dans le repère drone (pour le tilt) - toujours vérité terrain
         cy = np.cos(self.current_yaw)
         sy = np.sin(self.current_yaw)
 
@@ -337,6 +461,7 @@ class UAV(Agent):
         self.current_roll = (1.0 - alpha) * self.current_roll + alpha * roll_des
 
         # 7. Contrôle de position (PID x,y,z) -> accélérations désirées
+        #    basé EXCLUSIVEMENT sur la vérité terrain (comme ton code original)
         if dist < self.pos_tolerance and speed3d < self.vel_tolerance:
             # Arrivé et quasi immobile -> reset PID, juste compensation gravité
             self.pid_x.reset()
@@ -387,7 +512,7 @@ class UAV(Agent):
             )
 
             # Orientation: roll/pitch/yaw calculés ci-dessus
-            orn_q = p.getQuaternionFromEuler(
+            orn_q_cmd = p.getQuaternionFromEuler(
                 [self.current_roll, self.current_pitch, self.current_yaw]
             )
 
@@ -401,7 +526,7 @@ class UAV(Agent):
             p.resetBasePositionAndOrientation(
                 self.bodyId,
                 cur_pos,
-                orn_q,
+                orn_q_cmd,
                 physicsClientId=self.physics_client_id,
             )
 
@@ -415,6 +540,10 @@ class UAV(Agent):
 
         except p.error:
             return
+
+        # 10. Logging de l'état courant (après action)
+        self._log_state(pos_true=pos, vel_true=vel)
+        self._sim_time += self.dt
 
     # ------------------------------------------------------------------
     def apply_physics(self, *args, **kwargs):

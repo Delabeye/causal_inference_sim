@@ -52,6 +52,11 @@ agents:
     start_pos: [0.0, 0.0, 0.2]
     start_orn_euler: [0.0, 0.0, 0.0]
 
+    logging:
+      enabled: true
+      dir: "logs"
+      file: "drone_0_log.csv"
+
     physics:
       thrust_coeff: 2.2e-8
       max_rpm: 25000.0
@@ -60,11 +65,7 @@ agents:
     waypoints:
       - [0.0, 0.0, 1.0]
       - [2.0, 1.0, 1.0]
-      - [2.0, -1.0, 1.2]
-      - [0.0, -2.0, 1.0]
-      - [-2.0, -1.0, 1.0]
-      - [-2.0, 1.0, 1.2]
-      - [0.0, 0.0, 1.0]
+
 
     # Paramètres de dynamique "simple"
     acc_limit_xy: 5.0
@@ -86,14 +87,23 @@ agents:
     sensors:
       gps:
         enabled: true
-        position_noise_std: 0.1
-        velocity_noise_std: 0.05
+        position_noise_std: 0.2
+        velocity_noise_std: 0.1
 
       imu:
         enabled: true
         accel_noise_std: 0.3
         gyro_noise_std: 0.03
         gravity: 9.81
+
+      ekf:
+        enabled: true
+        q_pos: 0.01       # cohérent avec ce qu'on a mis dans le code
+        q_vel: 0.05
+
+    use_ekf_for_control: true
+    ekf_blend_alpha: 0.3   # commencer vers 0.2–0.4
+    ekf_max_jump: 2.0      # ignore les sauts > 2 m par pas
 
     components:
       controller_x:
