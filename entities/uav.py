@@ -7,7 +7,7 @@ from entities.agent import Agent
 from Control.PID import PIDController
 from entities.sensor import GPSSensor, IMUSensor, LidarSensor
 from Control.EKF import GPSEKF  # EKF pour analyse/log uniquement
-
+from Control.Path_planning import RRT3DPlanner
 
 class UAV(Agent):
     """
