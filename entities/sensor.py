@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pybullet as p
 
@@ -139,13 +140,14 @@ class LidarSensor(Sensor):
         if self.angle_resolution <= 0:
             self.angle_resolution = 1.0
         
-    def measure(self, sensor_position: np.ndarray):
+    def measure(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float) -> list[np.ndarray]:
         """
         Simule un lidar 2D à 360° autour du capteur.
         sensor_position : np.array([x, y, z])
         """
         obstacles_positions = []
         num_measurements = int(360 / self.angle_resolution)
+        
 
         for i in range(num_measurements):
             angle_deg = i * self.angle_resolution
@@ -157,9 +159,19 @@ class LidarSensor(Sensor):
                 np.sin(angle_rad),
                 0.0
                 ])
-
+            
+            Rz = np.array([[math.cos(yaw), -math.sin(yaw),0],
+                   [math.sin(yaw),  math.cos(yaw),0],
+                   [0,0,1]])
+            Ry = np.array([[math.cos(pitch),0, math.sin(pitch)],
+                   [0,1,0],
+                   [-math.sin(pitch),0, math.cos(pitch)]])
+            Rx = np.array([[1,0,0],
+                   [0,math.cos(roll), -math.sin(roll)],
+                   [0,math.sin(roll), math.cos(roll)]])
+            R = Rz @ Ry @ Rx
             # point final du rayon
-            ray_end = sensor_position + direction * self.max_distance
+            ray_end = sensor_position + R @ direction * self.max_distance
 
             result = p.rayTest(
                 sensor_position.tolist(),

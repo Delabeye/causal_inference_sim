@@ -5,9 +5,14 @@ import numpy as np
 
 from entities.agent import Agent
 from Control.PID import PIDController
+<<<<<<< HEAD
 from entities.sensor import GPSSensor, IMUSensor
 from Control.EKF import GPSEKF  # EKF pour analyse/log uniquement
 
+=======
+from entities.sensor import GPSSensor, IMUSensor, LidarSensor
+from Control.Path_planning import RRT3DPlanner
+>>>>>>> 65380a615679b224a3abb70dcf4d758792e9ec1f
 
 class UAV(Agent):
     """
@@ -74,6 +79,9 @@ class UAV(Agent):
             dt=self.dt,
         )
         self._create_body_frame_axes(axis_length=0.5)
+
+        #obstacle list
+        self.detected_obstacles = []
 
         # ----------- Paramètres physiques -----------
         self.g = 9.81
@@ -223,6 +231,13 @@ class UAV(Agent):
         self.last_imu_meas = None   # (specific_force_body, gyro_body)
         self.last_ekf_state = None  # (pos_est, vel_est)
 
+        # Lidar
+        self.lidar_sensor = LidarSensor(self.config['sensors']['lidar']['max_distance'],
+                                   self.config['sensors']['lidar']['angle_resolution'])
+        
+        self.components["lidar_sensor"] = self.lidar_sensor
+
+
     def _create_body_frame_axes(self, axis_length: float = 0.3):
         """
         Affiche le repère local attaché au drone :
@@ -292,6 +307,7 @@ class UAV(Agent):
                 self.current_wp_idx += 1
 
     # ------------------------------------------------------------------
+<<<<<<< HEAD
     def _log_state(self, pos_true, vel_true):
         """Enregistre dans le CSV : vérité, GPS, EKF (si logging activé)."""
         if not self.logging_enabled or self.log_file_path is None:
@@ -352,6 +368,32 @@ class UAV(Agent):
             if not file_exists:
                 writer.writeheader()
             writer.writerow(row)
+=======
+    def get_checkpoints(self,meas_pos: np.ndarray) -> list[np.ndarray]:
+        """Retourne la liste des checpoints"""
+        checkpoints = RRT3DPlanner.plan(meas_pos, self.waypoints[self.current_wp_idx],self.detected_obstacles)
+        return checkpoints
+    
+    # ------------------------------------------------------------------
+    def get_lidar_data(self):
+        """Retourne les données du lidar sous forme de liste de distances."""
+        if self.lidar_sensor is not None:
+            # Obtenir la position et l'orientation actuelles du drone
+            pos, orn_q = p.getBasePositionAndOrientation(
+                self.bodyId, physicsClientId=self.physics_client_id
+            )
+            orn_euler = p.getEulerFromQuaternion(orn_q)
+
+            # Mesurer avec le lidar
+            obstacles = self.lidar_sensor.measure(
+                position=np.array(pos, dtype=float),
+                orientation_euler=np.array(orn_euler, dtype=float)
+            )
+            return obstacles    
+        else:
+            return None
+    
+>>>>>>> 65380a615679b224a3abb70dcf4d758792e9ec1f
 
     # ------------------------------------------------------------------
     def think_and_act(self, setpoint: np.ndarray | None = None):

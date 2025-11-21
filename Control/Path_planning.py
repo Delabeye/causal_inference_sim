@@ -1,91 +1,98 @@
-from tracemalloc import start
 import numpy as np
+import random
 
-from utilities.utilities import euclidean_distance_3d
+class RRTNode:
+    def __init__(self, pos, parent=None):
+        self.pos = np.array(pos, dtype=float)
+        self.parent = parent
 
-class PathPlanning:
-    def __init__(self):
-        pass
-    
-    def plan_path_lidar(self, start: np.ndarray, goal: np.ndarray,
-                    obstacles: list, checkpoints_num: int,
-                    min_clearance: float,
-                    repel_gain: float = 1.2,
-                    max_adjust: float = 2.0) -> list:
+class RRT3DPlanner:
+    def __init__(
+            self,
+            config: dict,
+        ):
         """
-        Path planning simplifié avec évitement multi-obstacles basé sur des points LIDAR.
-        Approche = interpolation linéaire + répulsion douce + correction cumulative + lissage.
-
-        start : np.array [x,y,z]
-        goal  : np.array [x,y,z]
-        obstacles : liste de points 3D détectés (x,y,z)
-        checkpoints_num : nombre de checkpoints intermédiaires
-        min_clearance : distance minimale de sécurité autour des obstacles
-        repel_gain : facteur d'intensité de répulsion (1.0 = normal)
-        max_adjust : magnitude max de déplacement d’un checkpoint pour stabilité
+        bounds: dict { "x": (xmin, xmax), "y": (...), "z": (...) }
+        step_size: distance step RRT per extension
+        safe_distance : distance min par rapport à tout obstacle
         """
+        self.bounds = config.get("world_bounds")
+        self.step_size = config.get("step_size", 1.0)
+        self.max_iter = config.get("max_iter", 3000)
+        self.safe_distance = config.get("safe_distance", 1.0)
 
+    # -------------------------------------------------------------
+    # Utilitaires
+    # -------------------------------------------------------------
+    def _random_point(self):
+        return np.array([
+            random.uniform(*self.bounds["x"]),
+            random.uniform(*self.bounds["y"]),
+            random.uniform(*self.bounds["z"]),
+        ])
+
+    def _distance(self, a, b):
+        return np.linalg.norm(a - b)
+
+    def _nearest_node(self, nodes, point):
+        dists = [self._distance(n.pos, point) for n in nodes]
+        return nodes[np.argmin(dists)]
+
+    def _steer(self, from_node, to_point):
+        direction = to_point - from_node.pos
+        norm = np.linalg.norm(direction)
+        if norm < 1e-6:
+            return from_node.pos
+        return from_node.pos + (direction / norm) * self.step_size
+
+    def _is_collision_free(self, pos, obstacles):
+        """Vérifie juste la distance aux obstacles (obstacles = liste de points)."""
+        for ob in obstacles:
+            if np.linalg.norm(pos - ob) < self.safe_distance:
+                return False
+        return True
+
+    # -------------------------------------------------------------
+    # Construire chemin final
+    # -------------------------------------------------------------
+    def _reconstruct_path(self, node):
         path = []
-        path.append(start)
+        cur = node
+        while cur is not None:
+            path.append(cur.pos)
+            cur = cur.parent
+        return path[::-1]
 
-    # -------------------------
-    # 1. Génération initiale des checkpoints
-    # -------------------------
-        checkpoints = []
-        for i in range(1, checkpoints_num + 1):
-            t = i / (checkpoints_num + 1)
-            checkpoint = start + t * (goal - start)
-            checkpoints.append(checkpoint)
+    # -------------------------------------------------------------
+    # RRT principal
+    # -------------------------------------------------------------
+    def plan(self, start, goal, obstacles):
+        start_node = RRTNode(start)
+        nodes = [start_node]
 
-    # -------------------------
-    # 2. Ajustement des checkpoints avec répulsion multi-obstacles
-    # -------------------------
-        corrected_checkpoints = []
+        for _ in range(self.max_iter):
 
-        for cp in checkpoints:
-            correction = np.zeros(3)
+            # Sample random point
+            rnd = self._random_point()
 
-            for obs in obstacles:
-                d = np.linalg.norm(cp - obs)
+            # Get nearest RRT node
+            nearest = self._nearest_node(nodes, rnd)
 
-                if d < min_clearance:
-                # direction de répulsion
-                    direction = (cp - obs) / (d + 1e-6)
+            # Move toward rnd
+            new_pos = self._steer(nearest, rnd)
 
-                # intensité inversement proportionnelle à la distance
-                    repel_strength = repel_gain * (min_clearance - d)
+            # Check obstacle clearance
+            if not self._is_collision_free(new_pos, obstacles):
+                continue
 
-                # contribution au vecteur global de correction
-                    correction += direction * repel_strength
+            # Add new node
+            new_node = RRTNode(new_pos, parent=nearest)
+            nodes.append(new_node)
 
-        # -------------------------
-        # 3. Limite la magnitude (stabilité)
-        # -------------------------
-            corr_norm = np.linalg.norm(correction)
-            if corr_norm > max_adjust:
-                correction = (correction / corr_norm) * max_adjust
+            # Check if goal reached
+            if self._distance(new_node.pos, goal) < self.step_size:
+                goal_node = RRTNode(goal, parent=new_node)
+                return self._reconstruct_path(goal_node)
 
-            new_cp = cp + correction
-            corrected_checkpoints.append(new_cp)
-
-    # -------------------------
-    # 4. Lissage léger (beaucoup plus stable)
-    # -------------------------
-        smoothed = []
-        alpha = 0.35  # poids du smoothing (0 = pas de lissage, 1 = très lisse)
-
-        smoothed.append(corrected_checkpoints[0])  # premier fixe
-        for i in range(1, len(corrected_checkpoints)):
-            sm = alpha * corrected_checkpoints[i] + (1 - alpha) * smoothed[i - 1]
-            smoothed.append(sm)
-
-    # -------------------------
-    # 5. Construction finale du chemin
-    # -------------------------
-        for c in smoothed:
-            path.append(c)
-
-        path.append(goal)
-
-        return path
+        return None  # Échec
 
