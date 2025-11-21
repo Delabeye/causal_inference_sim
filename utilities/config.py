@@ -1,28 +1,35 @@
 # utilities/config.py
-
 import yaml
+from pathlib import Path
 
 
 def load_config(config_path: str = "config.yaml"):
     """
     Charge le fichier de configuration YAML (encodage UTF-8).
+
+    - Vérifie que le fichier existe.
+    - Lève une erreur explicite si le YAML est vide ou invalide.
+    - Retourne toujours un dict si tout va bien.
     """
-    try:
-        # ✅ on force l'encodage en UTF-8 pour éviter les erreurs Windows (cp1252)
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+    path = Path(config_path)
 
-        print(f"Configuration chargée depuis {config_path}")
-        return config
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Fichier de configuration '{config_path}' introuvable "
+            f"(dossier courant = {Path.cwd()})"
+        )
 
-    except FileNotFoundError:
-        print(f"ERREUR : Fichier de configuration '{config_path}' non trouvé.")
-        return None
+    with path.open("r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
 
-    except UnicodeDecodeError as e:
-        print(f"ERREUR : Problème d'encodage en lisant '{config_path}' : {e}")
-        return None
+    if config is None:
+        # Fichier vide ou juste des commentaires
+        raise ValueError(f"Le fichier de configuration '{config_path}' est vide.")
 
-    except yaml.YAMLError as e:
-        print(f"ERREUR : Erreur lors de l'analyse du YAML : {e}")
-        return None
+    if not isinstance(config, dict):
+        raise TypeError(
+            f"Le fichier de configuration '{config_path}' ne décrit pas un dictionnaire YAML."
+        )
+
+    print(f"Configuration chargée depuis {config_path}")
+    return config
