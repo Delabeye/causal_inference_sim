@@ -1,64 +1,69 @@
 flowchart LR
+  subgraph App
+    main["main_py"]
+    config["config_yaml"]
+    sim["SimulationManager"]
+  end
 
-    %% ===========================================
-    %% SECTION 2 : MAIN REAL-TIME SIMULATION LOOP
-    %% ===========================================
+  subgraph Physics
+    pyb["PyBullet"]
+    world["World"]
+  end
 
-    %% Main loop nodes
-    sim_mgr_loop["🐍 simulator/simulation_manager.py\nSimulationManager.run() – main loop"]
-    uav_brain["🧠🐍 entities/uav.py\nthink_and_act() – agent brain"]
-    pyb["⚙️ PyBullet Engine\n(Physical world)"]
+  subgraph SwarmLayer
+    swarm["Swarm"]
+  end
 
-    %% Folder groups
-    subgraph "simulator/"
-        sim_mgr_loop
-    end
+  subgraph UAVLayer
+    agent["Agent"]
+    uav["UAV"]
+    pid["PID"]
+    sensors["Sensors"]
+    ekf["GPSEKF"]
+    logger["Logger_CSV"]
+  end
 
-    subgraph "entities/"
-        uav_brain
-        gps["🐍 entities/sensor.py\nGPSSensor"]
-    end
+  subgraph SensorNodes
+    gps["GPSSensor"]
+    imu["IMUSensor"]
+    lidar["LidarSensor"]
+  end
 
-    subgraph "components/"
-        kf["🧠 components/estimators.py\nKalmanFilter Stub"]
-        pid["🧠 components/controllers.py\nPIDController Stub"]
-    end
+  %% Application flow
+  main -->|read_config| config
+  main -->|create_simulation| sim
 
-    %% Loop steps (Think / Act / Repeat)
-    sim_mgr_loop -->|"1. Think: calls think_and_act()"| uav_brain
-    sim_mgr_loop -->|"2. Act: p.stepSimulation()"| pyb
-    pyb -->|"3. Repeat: next loop (time += dt)"| sim_mgr_loop
+  %% Simulation and physics
+  sim -->|init_physics| pyb
+  sim -->|create_world| world
+  sim -->|create_swarm| swarm
 
-    %% Control loop inside UAV brain (think_and_act)
-    setpoint["Setpoint (desired state)"]
-    sum((⊕ Summation))
+  %% Swarm creates UAVs
+  swarm -->|create_uav| uav
 
-    %% A: Setpoint to summation
-    setpoint -->|"A. Setpoint"| sum
+  %% Inheritance
+  agent -->|base_class_of| uav
 
-    %% B: True state from PyBullet to sensor
-    pyb -->|"B. True state\n(p.getBasePosition...)"| gps
+  %% UAV internal components
+  uav --> pid
+  uav --> sensors
+  uav --> ekf
+  uav --> logger
 
-    %% C: Noisy measurement to filter
-    gps -->|"C. Noisy measurement"| kf
+  %% Sensors inside UAV
+  sensors --> gps
+  sensors --> imu
+  sensors --> lidar
 
-    %% D: Estimated state back to summation
-    kf -->|"D. Estimated state"| sum
+  %% Data flow
+  pyb -->|ground_truth_state_to_control| uav
 
-    %% E: Error to PID controller
-    sum -->|"E. Error"| pid
+  gps -->|gps_measurements| uav
+  gps -->|gps_measurements| ekf
+  imu -->|imu_measurements| uav
+  lidar -->|lidar_measurements| uav
 
-    %% F: Command from PID to UAV brain
-    pid -->|"F. Command (e.g., RPMs)"| uav_brain
+  ekf -->|estimated_state_to_uav| uav
+  ekf -->|estimated_state_to_pid| pid
 
-    %% G: Command becomes applied force in PyBullet
-    uav_brain -->|"G. Apply force\n(p.applyExternalForce)"| pyb
-
-    %% (Optional) styling
-    classDef loopNode fill:#E3F9E5,stroke:#1E8E3E,stroke-width:2px,color:#000;
-    classDef engineNode fill:#FFFFFF,stroke:#1E8E3E,stroke-width:3px,color:#000;
-    classDef logicNode fill:#F5FFF7,stroke:#1E8E3E,stroke-width:1.5px,color:#000;
-
-    class sim_mgr_loop,uav_brain,gps,kf,pid loopNode;
-    class setpoint,sum logicNode;
-    class pyb engineNode;
+  uav -->|log_data| logger
