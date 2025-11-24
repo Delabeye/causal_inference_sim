@@ -6,8 +6,8 @@ import numpy as np
 from entities.agent import Agent
 from Control.PID import PIDController
 from entities.sensor import GPSSensor, IMUSensor, LidarSensor
-from Control.EKF import GPSEKF  # EKF pour analyse/log uniquement
-from Control.Path_planning import RRT3DPlanner
+from Control.EKF import GPSEKF
+
 
 class UAV(Agent):
     """
@@ -18,8 +18,9 @@ class UAV(Agent):
       - il se penche vers l'avant (pitch) lorsqu'il avance, et reste droit en vol stationnaire
       - plusieurs waypoints possibles (liste de positions à suivre)
       - capteurs GPS / IMU optionnels
-      - EKF optionnel pour ANALYSE (ne modifie PAS le contrôle)
-      - LOG optionnel vers un fichier CSV (vérité / GPS / EKF)
+      - EKF optionnel (analyse / log uniquement, NE MODIFIE PAS le contrôle)
+      - Lidar optionnel (analyse / log uniquement)
+      - Logging optionnel vers un fichier CSV
     """
 
     def __init__(self, config: dict, physics_client_id: int, dt: float):
@@ -28,11 +29,13 @@ class UAV(Agent):
         self.physics_client_id = physics_client_id
         self.name = self.config.get("name", "unnamed_uav")
 
-        # ----------- EKF (analyse uniquement) -----------
-        self.ekf = None
+        # ----------- EKF / Lidar / Logging -----------
+        self.ekf: GPSEKF | None = None
         self.last_ekf_state = None  # (pos_est, vel_est)
 
-        # ----------- Logging -----------
+        self.lidar_sensor: LidarSensor | None = None
+        self.last_lidar_points = None  # liste de np.ndarray
+
         log_cfg = self.config.get("logging", {})
         self.logging_enabled = bool(log_cfg.get("enabled", False))
         self.log_file_path = None
@@ -43,7 +46,6 @@ class UAV(Agent):
             os.makedirs(log_dir, exist_ok=True)
             base_name = log_cfg.get("file", f"{self.name}_log.csv")
             self.log_file_path = os.path.join(log_dir, base_name)
-            # On réinitialise le fichier s'il existe
             if os.path.isfile(self.log_file_path):
                 os.remove(self.log_file_path)
             print(f"[{self.name}] Logging activé -> {self.log_file_path}")
@@ -75,9 +77,6 @@ class UAV(Agent):
         )
         self._create_body_frame_axes(axis_length=0.5)
 
-        #obstacle list
-        self.detected_obstacles = []
-
         # ----------- Paramètres physiques -----------
         self.g = 9.81
 
@@ -98,8 +97,6 @@ class UAV(Agent):
             total_mass = 0.03  # fallback si URDF bizarre
 
         self.mass = float(total_mass)
-
-        self.path_planner = RRT3DPlanner(self.config.get("RRT3DPlanner", {}))
 
         # ----------- PID à partir du YAML -----------
         components_cfg = self.config.get("components", {})
@@ -170,6 +167,10 @@ class UAV(Agent):
 
         self.current_wp_idx = 0
 
+        # Pour log / debug capteurs
+        self.last_gps_meas = None   # (pos, vel)
+        self.last_imu_meas = None   # (specific_force_body, gyro_body)
+
         print(
             f"UAV '{self.name}' chargé, bodyId={self.bodyId}, "
             f"masse_totale={self.mass:.4f} kg, {len(self.waypoints)} waypoint(s)"
@@ -177,7 +178,7 @@ class UAV(Agent):
 
     # ------------------------------------------------------------------
     def _initialize_components(self):
-        """Initialise les capteurs + EKF (pour analyse) si définis dans le YAML."""
+        """Initialise les capteurs + EKF + Lidar si définis dans le YAML."""
         self.components = {}
 
         sensors_cfg = self.config.get("sensors", {})
@@ -198,14 +199,13 @@ class UAV(Agent):
         else:
             self.imu = None
 
-        # EKF (optionnel, pour analyse uniquement)
+        # EKF (optionnel, analyse / log uniquement)
         ekf_cfg = sensors_cfg.get("ekf", {})
         if self.gps is not None and ekf_cfg.get("enabled", False):
             q_pos = float(ekf_cfg.get("q_pos", 0.05))
             q_vel = float(ekf_cfg.get("q_vel", 0.10))
-            # on prend par défaut le bruit GPS si R non spécifié
-            r_pos = float(ekf_cfg.get("r_pos", gps_cfg.get("position_noise_std", 0.1)))
-            r_vel = float(ekf_cfg.get("r_vel", gps_cfg.get("velocity_noise_std", 0.05)))
+            r_pos = float(ekf_cfg.get("r_pos", sensors_cfg.get("gps", {}).get("position_noise_std", 0.1)))
+            r_vel = float(ekf_cfg.get("r_vel", sensors_cfg.get("gps", {}).get("velocity_noise_std", 0.05)))
 
             self.ekf = GPSEKF(
                 dt=self.dt,
@@ -223,31 +223,26 @@ class UAV(Agent):
             self.ekf = None
             print(f"[{self.name}] EKF désactivé")
 
-        # Pour log / debug
-        self.last_gps_meas = None   # (pos, vel)
-        self.last_imu_meas = None   # (specific_force_body, gyro_body)
-        self.last_ekf_state = None  # (pos_est, vel_est)
-
-        # ----------- LIDAR -----------
-        # Supporte à la fois 'lidar' et 'LidarSensor' dans le YAML
-        lidar_cfg = sensors_cfg.get("lidar", sensors_cfg.get("LidarSensor", {}))
-
+        # Lidar
+        lidar_cfg = sensors_cfg.get("lidar", {})
         if lidar_cfg.get("enabled", False):
             max_dist = float(lidar_cfg.get("max_distance", 10.0))
-            angle_res = float(lidar_cfg.get("angle_resolution", 1.0))
-
-            self.lidar_sensor = LidarSensor(max_dist, angle_res)
-            # clé dans components (tu peux garder le même nom qu’avant)
-            self.components["lidar_sensor"] = self.lidar_sensor
-
+            ang_res = float(lidar_cfg.get("angle_resolution", 1.0))
+            self.lidar_sensor = LidarSensor(max_dist, ang_res)
+            self.components["lidar"] = self.lidar_sensor
             print(
                 f"[{self.name}] Lidar activé "
-                f"(max_distance={max_dist}, angle_resolution={angle_res})"
+                f"(max_distance={max_dist}, angle_resolution={ang_res})"
             )
         else:
             self.lidar_sensor = None
             print(f"[{self.name}] Lidar désactivé")
 
+        # Reset états capteurs
+        self.last_gps_meas = None
+        self.last_imu_meas = None
+        self.last_ekf_state = None
+        self.last_lidar_points = None
 
     def _create_body_frame_axes(self, axis_length: float = 0.3):
         """
@@ -316,18 +311,20 @@ class UAV(Agent):
         if dist < self.pos_tolerance and speed < self.vel_tolerance:
             if self.current_wp_idx < len(self.waypoints) - 1:
                 self.current_wp_idx += 1
+
     # ------------------------------------------------------------------
-    def get_lidar_data(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float) -> list[np.ndarray]:
+    def get_lidar_data(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float):
         """
-        Utilise le capteur Lidar pour obtenir les positions des obstacles détectés.
-        Retourne une liste de positions d'obstacles (np.ndarray).
+        Mesure Lidar (si activé). Ne modifie pas le contrôle.
+        Retourne une liste de points (np.ndarray) ou [] si désactivé.
         """
         if self.lidar_sensor is None:
             return []
         return self.lidar_sensor.measure(sensor_position, roll, yaw, pitch)
+
     # ------------------------------------------------------------------
     def _log_state(self, pos_true, vel_true):
-        """Enregistre dans le CSV : vérité, GPS, EKF (si logging activé)."""
+        """Enregistre dans le CSV : vérité, GPS, EKF, Lidar (si logging activé)."""
         if not self.logging_enabled or self.log_file_path is None:
             return
 
@@ -336,9 +333,11 @@ class UAV(Agent):
         vx_gps = vy_gps = vz_gps = np.nan
         x_ekf = y_ekf = z_ekf = np.nan
         vx_ekf = vy_ekf = vz_ekf = np.nan
+        lidar_count = np.nan
 
         gps_enabled = 1 if self.gps is not None else 0
         ekf_enabled = 1 if self.ekf is not None else 0
+        lidar_enabled = 1 if self.lidar_sensor is not None else 0
 
         if self.last_gps_meas is not None:
             gps_pos, gps_vel = self.last_gps_meas
@@ -353,6 +352,9 @@ class UAV(Agent):
             ekf_vel = np.asarray(ekf_vel, dtype=float)
             x_ekf, y_ekf, z_ekf = ekf_pos.tolist()
             vx_ekf, vy_ekf, vz_ekf = ekf_vel.tolist()
+
+        if self.last_lidar_points is not None:
+            lidar_count = float(len(self.last_lidar_points))
 
         row = {
             "t": self._sim_time,
@@ -376,6 +378,8 @@ class UAV(Agent):
             "vz_ekf": vz_ekf,
             "gps_enabled": gps_enabled,
             "ekf_enabled": ekf_enabled,
+            "lidar_enabled": lidar_enabled,
+            "lidar_count": lidar_count,
         }
 
         file_exists = os.path.isfile(self.log_file_path)
@@ -390,13 +394,10 @@ class UAV(Agent):
     # ------------------------------------------------------------------
     def think_and_act(self, setpoint: np.ndarray | None = None):
         """
-        Contrôle de position avec orientation réaliste:
-          - plusieurs waypoints possibles (self.waypoints)
-          - yaw pour aligner l'axe x vers le waypoint courant
-          - tant que l'axe x n'est pas aligné, pas d'accélération en x,y
-          - tilt (roll/pitch) en fonction de la vitesse dans le repère drone
-          - GPS/IMU/EKF mesurés mais NON utilisés pour le contrôle
-          - logging du GT/GPS/EKF vers un CSV
+        Contrôle de position avec orientation réaliste (DYNAMIQUE ORIGINALE) :
+          - mêmes PID, même yaw_align, même tilt
+          - contrôle basé EXCLUSIVEMENT sur la vérité terrain (pos / vel GT)
+          - GPS / EKF / Lidar uniquement pour mesure + log
         """
         # Si le serveur n'est plus connecté, on ne fait rien
         if not p.isConnected(self.physics_client_id):
@@ -417,12 +418,11 @@ class UAV(Agent):
         orn_q = state["orn_q"]
         ang_vel = state["ang_vel"]
 
-        # 2. Mesures capteurs (pour info / logging / EKF)
+        # 2. Mesures GPS / EKF (NE MODIFIENT PAS LA COMMANDE)
         if self.gps is not None:
             meas_pos, meas_vel = self.gps.measure(pos, vel)
             self.last_gps_meas = (meas_pos, meas_vel)
 
-            # EKF : estimation pour analyse (ne modifie pas le contrôle)
             if self.ekf is not None:
                 est_pos, est_vel = self.ekf.step(
                     np.asarray(meas_pos, dtype=float),
@@ -433,6 +433,7 @@ class UAV(Agent):
             self.last_gps_meas = None
             self.last_ekf_state = None
 
+        # 3. Mesures IMU (pour info / log éventuel)
         if self.imu is not None:
             specific_force_body, gyro_body = self.imu.measure(
                 ground_truth_position=pos,
@@ -445,21 +446,16 @@ class UAV(Agent):
         else:
             self.last_imu_meas = None
 
-        # 3. Met à jour le waypoint actif si le courant est atteint (VÉRITÉ terrain)
+        # 4. Met à jour le waypoint actif (sur la base de la vérité terrain)
         self._update_waypoint_if_reached(pos, vel)
-        self.target = self._get_active_target()
+        target = self._get_active_target()
 
-        #checkpoints
-        self.detected_obstacles += self.get_lidar_data(pos, self.current_roll, self.current_yaw, self.current_pitch)
-        print("detected_obstacles:", len(self.detected_obstacles))
-        #checkpoints = self.get_checkpoints(np.array(pos,dtype=float))
-        #active_target = checkpoints
         # Erreurs de position
-        e_pos = self.target - pos
+        e_pos = target - pos
         dist = float(np.linalg.norm(e_pos))
         speed3d = float(np.linalg.norm(vel))
 
-        # 4. Calcul du yaw désiré: axe x pointe vers le waypoint (projection au sol)
+        # 5. Calcul du yaw désiré: axe x pointe vers le waypoint (projection au sol)
         dir_world = e_pos.copy()
         dir_world[2] = 0.0
         norm_dir = float(np.linalg.norm(dir_world))
@@ -474,14 +470,14 @@ class UAV(Agent):
             np.cos(yaw_des - self.current_yaw),
         )
 
-        # 5. Mise à jour du yaw (1er ordre, saturé en vitesse angulaire)
+        # 6. Mise à jour du yaw (1er ordre, saturé en vitesse angulaire)
         yaw_rate_cmd = self.yaw_align_gain * yaw_err
         yaw_rate_cmd = float(
             np.clip(yaw_rate_cmd, -self.yaw_rate_max, self.yaw_rate_max)
         )
         self.current_yaw += yaw_rate_cmd * self.dt
 
-        # 6. Vitesse dans le repère drone (pour le tilt) - toujours vérité terrain
+        # 7. Vitesse dans le repère drone (pour le tilt)
         cy = np.cos(self.current_yaw)
         sy = np.sin(self.current_yaw)
 
@@ -499,8 +495,8 @@ class UAV(Agent):
         self.current_pitch = (1.0 - alpha) * self.current_pitch + alpha * pitch_des
         self.current_roll = (1.0 - alpha) * self.current_roll + alpha * roll_des
 
-        # 7. Contrôle de position (PID x,y,z) -> accélérations désirées
-        #    basé EXCLUSIVEMENT sur la vérité terrain (comme ton code original)
+        # 8. Contrôle de position (PID x,y,z) -> accélérations désirées
+        #    *** TOUJOURS basé sur la vérité terrain ***
         if dist < self.pos_tolerance and speed3d < self.vel_tolerance:
             # Arrivé et quasi immobile -> reset PID, juste compensation gravité
             self.pid_x.reset()
@@ -519,7 +515,7 @@ class UAV(Agent):
             ay_cmd = float(np.clip(ay_cmd, -self.acc_limit_xy, self.acc_limit_xy))
             az_cmd = float(np.clip(az_cmd, -self.acc_limit_z, self.acc_limit_z))
 
-            # Tant que l'axe x n'est pas bien aligné, on bloque x,y
+            # Tant que l'axe x n'est pas bien aligné, on bloque x,y (comme avant)
             if abs(yaw_err) > self.yaw_align_threshold:
                 ax_cmd = 0.0
                 ay_cmd = 0.0
@@ -527,7 +523,7 @@ class UAV(Agent):
             # Ajout de la gravité sur Z
             a_total = np.array([ax_cmd, ay_cmd, az_cmd + self.g], dtype=float)
 
-        # 8. Force souhaitée en repère monde
+        # 9. Force souhaitée en repère monde
         F = self.mass * a_total
 
         # Saturation de la force totale
@@ -535,7 +531,7 @@ class UAV(Agent):
         if norm_F > self.F_max:
             F *= self.F_max / (norm_F + 1e-9)
 
-        # 9. Application de la force + mise à jour de l'orientation
+        # 10. Application de la force + mise à jour de l'orientation
         if not p.isConnected(self.physics_client_id):
             return
 
@@ -580,7 +576,15 @@ class UAV(Agent):
         except p.error:
             return
 
-        # 10. Logging de l'état courant (après action)
+        # 11. Mesure Lidar (après mise à jour de la pose, pour le log)
+        self.last_lidar_points = self.get_lidar_data(
+            np.array(cur_pos, dtype=float),
+            self.current_roll,
+            self.current_yaw,
+            self.current_pitch,
+        )
+
+        # 12. Logging de l'état courant
         self._log_state(pos_true=pos, vel_true=vel)
         self._sim_time += self.dt
 
