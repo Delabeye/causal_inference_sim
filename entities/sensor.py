@@ -181,7 +181,7 @@ class LidarSensor(Sensor):
             # result structure :
             # (objectUniqueId, linkIndex, hit_fraction, hit_position, hit_normal)
 
-            hit_id = result[0][0]
+            hit_id = result[0][1]
 
             if hit_id != -1:
                 obstacles_positions.append(np.array(result[0][3], dtype=float))
