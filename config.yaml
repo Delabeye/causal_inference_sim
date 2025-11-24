@@ -102,6 +102,11 @@ agents:
         q_pos: 0.01       # cohérent avec ce qu'on a mis dans le code
         q_vel: 0.05
 
+      lidar:
+        max_distance: 100.0
+        angle_resolution: 1.0
+
+
     use_ekf_for_control: true
     ekf_blend_alpha: 0.3   # commencer vers 0.2–0.4
     ekf_max_jump: 2.0      # ignore les sauts > 2 m par pas

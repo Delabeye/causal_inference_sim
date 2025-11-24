@@ -302,6 +302,13 @@ class UAV(Agent):
         if dist < self.pos_tolerance and speed < self.vel_tolerance:
             if self.current_wp_idx < len(self.waypoints) - 1:
                 self.current_wp_idx += 1
+    # ------------------------------------------------------------------
+    def get_lidar_data(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float) -> list[np.ndarray]:
+        """
+        Utilise le capteur Lidar pour obtenir les positions des obstacles détectés.
+        Retourne une liste de positions d'obstacles (np.ndarray).
+        """
+        return self.lidar_sensor.measure(sensor_position, roll, yaw, pitch)
 
     # ------------------------------------------------------------------
     def _log_state(self, pos_true, vel_true):
@@ -428,8 +435,8 @@ class UAV(Agent):
         self.target = self._get_active_target()
 
         #checkpoints
-        self.detected_obstacles += self.get_lidar_data(pos, self.current_roll, self.current_yaw, self.current_pitch)
-        print("Detected obstacles:", len(self.detected_obstacles))
+        #self.detected_obstacles += self.get_lidar_data(pos, self.current_roll, self.current_yaw, self.current_pitch)
+        
         #checkpoints = self.get_checkpoints(np.array(pos,dtype=float))
         #active_target = checkpoints
         # Erreurs de position
