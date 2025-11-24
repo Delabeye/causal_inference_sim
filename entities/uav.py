@@ -228,11 +228,25 @@ class UAV(Agent):
         self.last_imu_meas = None   # (specific_force_body, gyro_body)
         self.last_ekf_state = None  # (pos_est, vel_est)
 
-        # Lidar
-        self.lidar_sensor = LidarSensor(self.config['sensors']['lidar']['max_distance'],
-                                   self.config['sensors']['lidar']['angle_resolution'])
-        
-        self.components["lidar_sensor"] = self.lidar_sensor
+        # ----------- LIDAR -----------
+        # Supporte à la fois 'lidar' et 'LidarSensor' dans le YAML
+        lidar_cfg = sensors_cfg.get("lidar", sensors_cfg.get("LidarSensor", {}))
+
+        if lidar_cfg.get("enabled", False):
+            max_dist = float(lidar_cfg.get("max_distance", 10.0))
+            angle_res = float(lidar_cfg.get("angle_resolution", 1.0))
+
+            self.lidar_sensor = LidarSensor(max_dist, angle_res)
+            # clé dans components (tu peux garder le même nom qu’avant)
+            self.components["lidar_sensor"] = self.lidar_sensor
+
+            print(
+                f"[{self.name}] Lidar activé "
+                f"(max_distance={max_dist}, angle_resolution={angle_res})"
+            )
+        else:
+            self.lidar_sensor = None
+            print(f"[{self.name}] Lidar désactivé")
 
 
     def _create_body_frame_axes(self, axis_length: float = 0.3):
@@ -308,8 +322,9 @@ class UAV(Agent):
         Utilise le capteur Lidar pour obtenir les positions des obstacles détectés.
         Retourne une liste de positions d'obstacles (np.ndarray).
         """
+        if self.lidar_sensor is None:
+            return []
         return self.lidar_sensor.measure(sensor_position, roll, yaw, pitch)
-
     # ------------------------------------------------------------------
     def _log_state(self, pos_true, vel_true):
         """Enregistre dans le CSV : vérité, GPS, EKF (si logging activé)."""
@@ -435,8 +450,8 @@ class UAV(Agent):
         self.target = self._get_active_target()
 
         #checkpoints
-        #self.detected_obstacles += self.get_lidar_data(pos, self.current_roll, self.current_yaw, self.current_pitch)
-        
+        self.detected_obstacles += self.get_lidar_data(pos, self.current_roll, self.current_yaw, self.current_pitch)
+        print("detected_obstacles:", len(self.detected_obstacles))
         #checkpoints = self.get_checkpoints(np.array(pos,dtype=float))
         #active_target = checkpoints
         # Erreurs de position
