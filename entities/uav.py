@@ -170,7 +170,9 @@ class UAV(Agent):
         # Pour log / debug capteurs
         self.last_gps_meas = None   # (pos, vel)
         self.last_imu_meas = None   # (specific_force_body, gyro_body)
-
+        
+        
+        self.detected_obstacles_positions = []
         print(
             f"UAV '{self.name}' chargé, bodyId={self.bodyId}, "
             f"masse_totale={self.mass:.4f} kg, {len(self.waypoints)} waypoint(s)"
@@ -320,7 +322,7 @@ class UAV(Agent):
         """
         if self.lidar_sensor is None:
             return []
-        return self.lidar_sensor.measure(sensor_position, roll, yaw, pitch)
+        return self.lidar_sensor.measure(sensor_position, roll, yaw, pitch,self.detected_obstacles_positions)
 
     # ------------------------------------------------------------------
     def _log_state(self, pos_true, vel_true):
@@ -432,7 +434,8 @@ class UAV(Agent):
         else:
             self.last_gps_meas = None
             self.last_ekf_state = None
-
+        self.detected_obstacles_positions = self.get_lidar_data(sensor_position=pos, roll=self.current_roll, yaw=self.current_yaw, pitch=self.current_pitch)
+        print(len(self.detected_obstacles_positions))
         # 3. Mesures IMU (pour info / log éventuel)
         if self.imu is not None:
             specific_force_body, gyro_body = self.imu.measure(
