@@ -160,8 +160,8 @@ class UAV(Agent):
 
         # ----------- Process noise (sur la force) -----------
         # Ecart-type du bruit de processus appliqué sur la force (N).
-        # Si non spécifié dans le YAML -> 0.0 => aucun changement de comportement.
-        self.process_noise_std = float(self.config.get("process_noise_std", 0.0))
+        # clamp à >= 0.0 pour être safe.
+        self.process_noise_std = max(0.0, float(self.config.get("process_noise_std", 0.0)))
 
         # ----------- Waypoints / cible -----------
         wp_list = self.config.get("waypoints", None)
@@ -176,6 +176,17 @@ class UAV(Agent):
         # Pour log / debug capteurs
         self.last_gps_meas = None   # (pos, vel)
         self.last_imu_meas = None   # (specific_force_body, gyro_body)
+
+        # Pour log / debug contrôle
+        # accélération de commande PID (sans gravité) au dernier pas
+        self.last_control_accel = np.zeros(3, dtype=float)  # [ax_cmd, ay_cmd, az_cmd]
+        # attitude commandée (roll, pitch, yaw) au dernier pas
+        self.last_attitude_cmd = np.array(
+            [self.current_roll, self.current_pitch, self.current_yaw], dtype=float
+        )
+        # info waypoint
+        self.last_wp_index = 0
+        self.last_wp_distance = np.nan
 
         print(
             f"UAV '{self.name}' chargé, bodyId={self.bodyId}, "
@@ -330,7 +341,7 @@ class UAV(Agent):
 
     # ------------------------------------------------------------------
     def _log_state(self, pos_true, vel_true):
-        """Enregistre dans le CSV : vérité, GPS, EKF, Lidar (si logging activé)."""
+        """Enregistre dans le CSV : vérité, GPS, EKF, Lidar, commande PID, attitude, waypoint."""
         if not self.logging_enabled or self.log_file_path is None:
             return
 
@@ -340,6 +351,12 @@ class UAV(Agent):
         x_ekf = y_ekf = z_ekf = np.nan
         vx_ekf = vy_ekf = vz_ekf = np.nan
         lidar_count = np.nan
+
+        # Commande PID (accélération) + attitude + waypoint
+        ax_cmd = ay_cmd = az_cmd = np.nan
+        roll = pitch = yaw = np.nan
+        wp_idx = self.last_wp_index
+        dist_wp = self.last_wp_distance
 
         gps_enabled = 1 if self.gps is not None else 0
         ekf_enabled = 1 if self.ekf is not None else 0
@@ -361,6 +378,12 @@ class UAV(Agent):
 
         if self.last_lidar_points is not None:
             lidar_count = float(len(self.last_lidar_points))
+
+        if self.last_control_accel is not None:
+            ax_cmd, ay_cmd, az_cmd = np.asarray(self.last_control_accel, dtype=float).tolist()
+
+        if self.last_attitude_cmd is not None:
+            roll, pitch, yaw = np.asarray(self.last_attitude_cmd, dtype=float).tolist()
 
         row = {
             "t": self._sim_time,
@@ -386,6 +409,14 @@ class UAV(Agent):
             "ekf_enabled": ekf_enabled,
             "lidar_enabled": lidar_enabled,
             "lidar_count": lidar_count,
+            "ax_cmd": ax_cmd,
+            "ay_cmd": ay_cmd,
+            "az_cmd": az_cmd,
+            "roll_cmd": roll,
+            "pitch_cmd": pitch,
+            "yaw_cmd": yaw,
+            "wp_index": wp_idx,
+            "dist_to_wp": dist_wp,
         }
 
         file_exists = os.path.isfile(self.log_file_path)
@@ -405,6 +436,7 @@ class UAV(Agent):
           - contrôle basé EXCLUSIVEMENT sur la vérité terrain (pos / vel GT)
           - GPS / EKF / Lidar uniquement pour mesure + log
           - Process noise optionnel ajouté sur la force
+          - Logging détaillé des commandes PID, attitude et waypoint
         """
         # Si le serveur n'est plus connecté, on ne fait rien
         if not p.isConnected(self.physics_client_id):
@@ -462,6 +494,10 @@ class UAV(Agent):
         dist = float(np.linalg.norm(e_pos))
         speed3d = float(np.linalg.norm(vel))
 
+        # Sauvegarde pour le log
+        self.last_wp_index = self.current_wp_idx
+        self.last_wp_distance = dist
+
         # 5. Calcul du yaw désiré: axe x pointe vers le waypoint (projection au sol)
         dir_world = e_pos.copy()
         dir_world[2] = 0.0
@@ -502,6 +538,11 @@ class UAV(Agent):
         self.current_pitch = (1.0 - alpha) * self.current_pitch + alpha * pitch_des
         self.current_roll = (1.0 - alpha) * self.current_roll + alpha * roll_des
 
+        # Sauvegarde attitude commandée pour logs
+        self.last_attitude_cmd = np.array(
+            [self.current_roll, self.current_pitch, self.current_yaw], dtype=float
+        )
+
         # 8. Contrôle de position (PID x,y,z) -> accélérations désirées
         #    *** TOUJOURS basé sur la vérité terrain ***
         if dist < self.pos_tolerance and speed3d < self.vel_tolerance:
@@ -509,6 +550,9 @@ class UAV(Agent):
             self.pid_x.reset()
             self.pid_y.reset()
             self.pid_z.reset()
+            # aucune accélération de commande, juste la gravité compensée
+            ax_cmd = ay_cmd = az_cmd = 0.0
+            self.last_control_accel = np.array([0.0, 0.0, 0.0], dtype=float)
             a_total = np.array([0.0, 0.0, self.g], dtype=float)
         else:
             ex, ey, ez = e_pos
@@ -527,6 +571,9 @@ class UAV(Agent):
                 ax_cmd = 0.0
                 ay_cmd = 0.0
 
+            # Sauvegarde de la commande PID (sans gravité) pour logs
+            self.last_control_accel = np.array([ax_cmd, ay_cmd, az_cmd], dtype=float)
+
             # Ajout de la gravité sur Z
             a_total = np.array([ax_cmd, ay_cmd, az_cmd + self.g], dtype=float)
 
@@ -542,7 +589,7 @@ class UAV(Agent):
         if self.process_noise_std > 0.0:
             noise = np.random.normal(0.0, self.process_noise_std, size=3)
             F = F + noise
-            # On pourrait re-saturer ici si tu veux être strict:
+            # Optionnel: re-saturation
             # norm_F = float(np.linalg.norm(F))
             # if norm_F > self.F_max:
             #     F *= self.F_max / (norm_F + 1e-9)
