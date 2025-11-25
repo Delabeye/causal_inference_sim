@@ -21,6 +21,7 @@ class UAV(Agent):
       - EKF optionnel (analyse / log uniquement, NE MODIFIE PAS le contrôle)
       - Lidar optionnel (analyse / log uniquement)
       - Logging optionnel vers un fichier CSV
+      - Process noise optionnel sur la force (modélise des perturbations type vent)
     """
 
     def __init__(self, config: dict, physics_client_id: int, dt: float):
@@ -156,6 +157,11 @@ class UAV(Agent):
         # Filtre pour lisser la rotation (0 -> très lissé, 1 -> pas lissé)
         self.tilt_smoothing = float(self.config.get("tilt_smoothing", 0.5))
         self.tilt_smoothing = np.clip(self.tilt_smoothing, 0.0, 1.0)
+
+        # ----------- Process noise (sur la force) -----------
+        # Ecart-type du bruit de processus appliqué sur la force (N).
+        # Si non spécifié dans le YAML -> 0.0 => aucun changement de comportement.
+        self.process_noise_std = float(self.config.get("process_noise_std", 0.0))
 
         # ----------- Waypoints / cible -----------
         wp_list = self.config.get("waypoints", None)
@@ -398,6 +404,7 @@ class UAV(Agent):
           - mêmes PID, même yaw_align, même tilt
           - contrôle basé EXCLUSIVEMENT sur la vérité terrain (pos / vel GT)
           - GPS / EKF / Lidar uniquement pour mesure + log
+          - Process noise optionnel ajouté sur la force
         """
         # Si le serveur n'est plus connecté, on ne fait rien
         if not p.isConnected(self.physics_client_id):
@@ -530,6 +537,15 @@ class UAV(Agent):
         norm_F = float(np.linalg.norm(F))
         if norm_F > self.F_max:
             F *= self.F_max / (norm_F + 1e-9)
+
+        # 9bis. Bruit de processus sur la force (si activé)
+        if self.process_noise_std > 0.0:
+            noise = np.random.normal(0.0, self.process_noise_std, size=3)
+            F = F + noise
+            # On pourrait re-saturer ici si tu veux être strict:
+            # norm_F = float(np.linalg.norm(F))
+            # if norm_F > self.F_max:
+            #     F *= self.F_max / (norm_F + 1e-9)
 
         # 10. Application de la force + mise à jour de l'orientation
         if not p.isConnected(self.physics_client_id):

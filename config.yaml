@@ -59,7 +59,7 @@ agents:
     urdf_path: "assets/quadrotor.urdf"
     start_pos: [0.0, 0.0, 0.2]
     start_orn_euler: [0.0, 0.0, 0.0]
-
+    process_noise_std: 0.01
 
     physics:
       thrust_coeff: 2.2e-8
