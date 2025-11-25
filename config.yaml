@@ -1,11 +1,23 @@
+#===============================================================
+# CONFIGURATION PRINCIPALE DU SIMULATEUR
+#===============================================================
 simulation:
-  connect_mode: "gui"    # "gui" ou "direct"
-  dt: 0.01
-  max_steps: 20000
-  max_sim_time: 200.0
+  # "gui" pour voir la simulation, "direct" pour tourner en arrière-plan
+  connect_mode: "gui"
 
+
+  # Pas de temps de la simulation (1/240. = 240 Hz)
+  dt: 0.00416
+
+
+  # Durée maximale de la simulation en secondes
+  max_sim_time: 60.0
+
+
+# Gravité
 physics:
   gravity: [0.0, 0.0, -9.81]
+
 
 #===============================================================
 # DÉFINITIONS DU MONDE
@@ -18,524 +30,112 @@ world:
       width: 1.0
       height: 1.0
 
+
     - type: "sphere"
       center: [-2.0, 1.0, 1.0]
       radius: 0.5
+
 
     - type: "cylinder"
       center: [0.0, 3.0, 1.5]
       radius: 0.25
       height: 3.0
 
+
+#===============================================================
+# DÉFINITIONS DES AGENTS (10 DRONES)
+#===============================================================
+swarm:
+  enabled: false       # <- mets false pour désactiver l'essaim
+  leader: "drone_0"   # nom du drone leader (optionnel, par défaut le 1er)
+  min_sep: 0.6        # distance minimale entre drones (m)
+  avoid_gain: 0.5     # intensité de la répulsion (0..1 recommandé)
+
+
 agents:
-  # ===================== DRONE 0 =====================
+  #------------------- DRONE 0 : LEADER ------------------------
   - type: "uav"
     name: "drone_0"
     urdf_path: "assets/quadrotor.urdf"
-
-    start_pos: [1.0, 0.0, 0.2]
+    start_pos: [0.0, 0.0, 0.2]
     start_orn_euler: [0.0, 0.0, 0.0]
 
+
+    physics:
+      thrust_coeff: 2.2e-8
+      max_rpm: 25000.0
+      motor_link_indices: [0, 1, 2, 3]
+
+
     waypoints:
-      - [3.0, 0.0, 1.0]
-      - [3.0, 3.0, 1.0]
-      - [0.0, 3.0, 1.0]
       - [0.0, 0.0, 1.0]
-
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_0_log.csv"
-
-    acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-
-    yaw_align_gain: 4.0
-    yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-
-    tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
-
-    components:
-      controller_x:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_y:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_z:
-        gains: {Kp: 2.0, Ki: 0.0, Kd: 0.2}
-        windup: 0.0
-
-    sensors:
-      gps:
-        enabled: true
-        position_noise_std: 0.2
-        velocity_noise_std: 0.1
-
-      imu:
-        enabled: true
-        accel_noise_std: 0.3
-        gyro_noise_std: 0.03
-        gravity: 9.81
-
-      ekf:
-        enabled: false   # EKF désactivé
-
-      lidar:
-        enabled: true   # Lidar désactivé
-        max_distance: 10.0
-        angle_resolution: 1.0
-
-    RRT3DPlanner:
-      enabled: false
-      world_bounds:
-        x: [-5.0, 5.0]
-        y: [-5.0, 5.0]
-        z: [0.0, 3.0]
-      max_iterations: 1000
-      step_size: 0.5
-      goal_tolerance: 0.2
-
-  # ===================== DRONE 1 =====================
-  - type: "uav"
-    name: "drone_1"
-    urdf_path: "assets/quadrotor.urdf"
-
-    start_pos: [0.7, 0.7, 0.2]
-    start_orn_euler: [0.0, 0.0, 0.0]
-
-    waypoints:
-      - [2.5, 0.5, 1.0]
-      - [2.5, 2.5, 1.0]
-      - [0.5, 2.5, 1.0]
-      - [0.5, 0.5, 1.0]
-
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_1_log.csv"
-
-    acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-
-    yaw_align_gain: 4.0
-    yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-
-    tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
-
-    components:
-      controller_x:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_y:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_z:
-        gains: {Kp: 2.0, Ki: 0.0, Kd: 0.2}
-        windup: 0.0
-
-    sensors:
-      gps:
-        enabled: true
-        position_noise_std: 0.2
-        velocity_noise_std: 0.1
-      imu:
-        enabled: true
-        accel_noise_std: 0.3
-        gyro_noise_std: 0.03
-        gravity: 9.81
-      ekf:
-        enabled: false
-      lidar:
-        enabled: false
-        max_distance: 10.0
-        angle_resolution: 1.0
-
-    RRT3DPlanner:
-      enabled: false
-      world_bounds:
-        x: [-5.0, 5.0]
-        y: [-5.0, 5.0]
-        z: [0.0, 3.0]
-      max_iterations: 1000
-      step_size: 0.5
-      goal_tolerance: 0.2
-
-  # ===================== DRONE 2 =====================
-  - type: "uav"
-    name: "drone_2"
-    urdf_path: "assets/quadrotor.urdf"
-
-    start_pos: [0.0, 1.0, 0.2]
-    start_orn_euler: [0.0, 0.0, 0.0]
-
-    waypoints:
-      - [0.0, 3.0, 1.0]
-      - [2.0, 3.0, 1.0]
       - [2.0, 1.0, 1.0]
-      - [0.0, 1.0, 1.0]
-
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_2_log.csv"
-
-    acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-
-    yaw_align_gain: 4.0
-    yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-
-    tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
-
-    components:
-      controller_x:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_y:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_z:
-        gains: {Kp: 2.0, Ki: 0.0, Kd: 0.2}
-        windup: 0.0
-
-    sensors:
-      gps:
-        enabled: true
-        position_noise_std: 0.2
-        velocity_noise_std: 0.1
-      imu:
-        enabled: true
-        accel_noise_std: 0.3
-        gyro_noise_std: 0.03
-        gravity: 9.81
-      ekf:
-        enabled: false
-      lidar:
-        enabled: false
-        max_distance: 10.0
-        angle_resolution: 1.0
-
-    RRT3DPlanner:
-      enabled: false
-      world_bounds:
-        x: [-5.0, 5.0]
-        y: [-5.0, 5.0]
-        z: [0.0, 3.0]
-      max_iterations: 1000
-      step_size: 0.5
-      goal_tolerance: 0.2
-
-  # ===================== DRONE 3 =====================
-  - type: "uav"
-    name: "drone_3"
-    urdf_path: "assets/quadrotor.urdf"
-
-    start_pos: [-0.7, 0.7, 0.2]
-    start_orn_euler: [0.0, 0.0, 0.0]
-
-    waypoints:
-      - [-2.0, 2.0, 1.0]
-      - [-2.0, 0.0, 1.0]
+      - [2.0, -1.0, 1.2]
+      - [0.0, -2.0, 1.0]
+      - [-2.0, -1.0, 1.0]
+      - [-2.0, 1.0, 1.2]
       - [0.0, 0.0, 1.0]
 
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_3_log.csv"
 
+    # Paramètres de dynamique "simple"
     acc_limit_xy: 5.0
     acc_limit_z: 5.0
     F_max_factor: 2.5
-
     pos_tolerance: 0.05
     vel_tolerance: 0.05
 
+
+    # Orientation réaliste
     yaw_align_gain: 4.0
     yaw_rate_max_deg: 120.0
     yaw_align_threshold_deg: 10.0
+
 
     tilt_gain: 0.4
     pitch_max_deg: 35.0
     roll_max_deg: 35.0
     tilt_smoothing: 0.5
-
-    components:
-      controller_x:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_y:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_z:
-        gains: {Kp: 2.0, Ki: 0.0, Kd: 0.2}
-        windup: 0.0
-
+   
     sensors:
       gps:
         enabled: true
-        position_noise_std: 0.2
-        velocity_noise_std: 0.1
+        position_noise_std: 0.1
+        velocity_noise_std: 0.05
+
+
       imu:
         enabled: true
         accel_noise_std: 0.3
         gyro_noise_std: 0.03
         gravity: 9.81
-      ekf:
-        enabled: false
+
       lidar:
         enabled: false
-        max_distance: 10.0
-        angle_resolution: 1.0
 
-    RRT3DPlanner:
-      enabled: false
-      world_bounds:
-        x: [-5.0, 5.0]
-        y: [-5.0, 5.0]
-        z: [0.0, 3.0]
-      max_iterations: 1000
-      step_size: 0.5
-      goal_tolerance: 0.2
-
-  # ===================== DRONE 4 =====================
-  - type: "uav"
-    name: "drone_4"
-    urdf_path: "assets/quadrotor.urdf"
-
-    start_pos: [-1.0, 0.0, 0.2]
-    start_orn_euler: [0.0, 0.0, 0.0]
-
-    waypoints:
-      - [-3.0, 0.0, 1.0]
-      - [-3.0, -3.0, 1.0]
-      - [0.0, -3.0, 1.0]
-      - [0.0, 0.0, 1.0]
-
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_4_log.csv"
-
-    acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-
-    yaw_align_gain: 4.0
-    yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-
-    tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
 
     components:
       controller_x:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
+        type: "pid"
+        gains:
+          Kp: 1.0
+          Ki: 0.0
+          Kd: 2.0
+        windup: 1.0
+
+
       controller_y:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
+        type: "pid"
+        gains:
+          Kp: 1.0
+          Ki: 0.0
+          Kd: 2.0
+        windup: 1.0
+
+
       controller_z:
-        gains: {Kp: 2.0, Ki: 0.0, Kd: 0.2}
-        windup: 0.0
-
-    sensors:
-      gps:
-        enabled: true
-        position_noise_std: 0.2
-        velocity_noise_std: 0.1
-      imu:
-        enabled: true
-        accel_noise_std: 0.3
-        gyro_noise_std: 0.03
-        gravity: 9.81
-      ekf:
-        enabled: false
-      lidar:
-        enabled: false
-        max_distance: 10.0
-        angle_resolution: 1.0
-
-    RRT3DPlanner:
-      enabled: false
-      world_bounds:
-        x: [-5.0, 5.0]
-        y: [-5.0, 5.0]
-        z: [0.0, 3.0]
-      max_iterations: 1000
-      step_size: 0.5
-      goal_tolerance: 0.2
-
-  # ===================== DRONE 5 =====================
-  - type: "uav"
-    name: "drone_5"
-    urdf_path: "assets/quadrotor.urdf"
-
-    start_pos: [-0.7, -0.7, 0.2]
-    start_orn_euler: [0.0, 0.0, 0.0]
-
-    waypoints:
-      - [-2.0, -2.0, 1.0]
-      - [-2.0, 0.0, 1.0]
-      - [0.0, 0.0, 1.0]
-
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_5_log.csv"
-
-    acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-
-    yaw_align_gain: 4.0
-    yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-
-    tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
-
-    components:
-      controller_x:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_y:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_z:
-        gains: {Kp: 2.0, Ki: 0.0, Kd: 0.2}
-        windup: 0.0
-
-    sensors:
-      gps:
-        enabled: true
-        position_noise_std: 0.2
-        velocity_noise_std: 0.1
-      imu:
-        enabled: true
-        accel_noise_std: 0.3
-        gyro_noise_std: 0.03
-        gravity: 9.81
-      ekf:
-        enabled: false
-      lidar:
-        enabled: false
-        max_distance: 10.0
-        angle_resolution: 1.0
-
-    RRT3DPlanner:
-      enabled: false
-      world_bounds:
-        x: [-5.0, 5.0]
-        y: [-5.0, 5.0]
-        z: [0.0, 3.0]
-      max_iterations: 1000
-      step_size: 0.5
-      goal_tolerance: 0.2
-
-  # ===================== DRONE 6 =====================
-  - type: "uav"
-    name: "drone_6"
-    urdf_path: "assets/quadrotor.urdf"
-
-    start_pos: [0.0, -1.0, 0.2]
-    start_orn_euler: [0.0, 0.0, 0.0]
-
-    waypoints:
-      - [0.0, -3.0, 1.0]
-      - [2.0, -3.0, 1.0]
-      - [2.0, -1.0, 1.0]
-      - [0.0, -1.0, 1.0]
-
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_6_log.csv"
-
-    acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-
-    yaw_align_gain: 4.0
-    yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-
-    tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
-
-    components:
-      controller_x:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_y:
-        gains: {Kp: 1.0, Ki: 0.0, Kd: 0.1}
-        windup: 0.0
-      controller_z:
-        gains: {Kp: 2.0, Ki: 0.0, Kd: 0.2}
-        windup: 0.0
-
-    sensors:
-      gps:
-        enabled: true
-        position_noise_std: 0.2
-        velocity_noise_std: 0.1
-      imu:
-        enabled: true
-        accel_noise_std: 0.3
-        gyro_noise_std: 0.03
-        gravity: 9.81
-      ekf:
-        enabled: false
-      lidar:
-        enabled: false
-        max_distance: 10.0
-        angle_resolution: 1.0
-
-    RRT3DPlanner:
-      enabled: false
-      world_bounds:
-        x: [-5.0, 5.0]
-        y: [-5.0, 5.0]
-        z: [0.0, 3.0]
-      max_iterations: 1000
-      step_size: 0.5
-      goal_tolerance: 0.2
+        type: "pid"
+        gains:
+          Kp: 3.0
+          Ki: 0.0
+          Kd: 4.0
+        windup: 1.0

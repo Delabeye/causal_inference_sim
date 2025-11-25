@@ -140,12 +140,12 @@ class LidarSensor(Sensor):
         if self.angle_resolution <= 0:
             self.angle_resolution = 1.0
         
-    def measure(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float) -> list[np.ndarray]:
+    def measure(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float, known_obstacles_positions: list[list[float]]) -> list[np.ndarray]:
         """
         Simule un lidar 2D à 360° autour du capteur.
         sensor_position : np.array([x, y, z])
         """
-        obstacles_positions = []
+    
         num_measurements = int(360 / self.angle_resolution)
         sensor_position[2] += 0.01
 
@@ -177,13 +177,17 @@ class LidarSensor(Sensor):
                 sensor_position.tolist(),
                 ray_end.tolist()
             )
-
+    
             # result structure :
             # (objectUniqueId, linkIndex, hit_fraction, hit_position, hit_normal)
 
-            hit_id = result[0][1]
+            hit_id = result[0][0]
 
             if hit_id != -1:
-                obstacles_positions.append(np.array(result[0][3], dtype=float))
-    
-        return obstacles_positions  
+                point=np.array(result[0][3], dtype=float)
+                for i in range(len(point)):
+                    point[i]=round(point[i],1)
+                if point.tolist() not in known_obstacles_positions and point[2] > 0.1:
+                    known_obstacles_positions.append(point.tolist())
+
+        return known_obstacles_positions  
