@@ -20,6 +20,12 @@ physics:
 
 
 #===============================================================
+# CONFIGURATION DU PATH PLANNING (RRT*)
+#===============================================================
+
+
+
+#===============================================================
 # DÉFINITIONS DU MONDE
 #===============================================================
 world:
@@ -46,10 +52,10 @@ world:
 # DÉFINITIONS DES AGENTS (10 DRONES)
 #===============================================================
 swarm:
-  enabled: false       # <- mets false pour désactiver l'essaim
-  leader: "drone_0"   # nom du drone leader (optionnel, par défaut le 1er)
-  min_sep: 0.6        # distance minimale entre drones (m)
-  avoid_gain: 0.5     # intensité de la répulsion (0..1 recommandé)
+  enabled: false       # <- Reste à false pour tester le RRT* seul
+  leader: "drone_0"   
+  min_sep: 0.6        
+  avoid_gain: 0.5     
 
 
 agents:
@@ -57,7 +63,7 @@ agents:
   - type: "uav"
     name: "drone_0"
     urdf_path: "assets/quadrotor.urdf"
-    start_pos: [0.0, 0.0, 0.2]
+    start_pos: [0.0, 0.0, 0.6]
     start_orn_euler: [0.0, 0.0, 0.0]
 
 
@@ -68,7 +74,7 @@ agents:
 
 
     waypoints:
-      - [0.0, 0.0, 1.0]
+      - [5.0, 0.0, 1.0]
       - [2.0, 1.0, 1.0]
       - [2.0, -1.0, 1.2]
       - [0.0, -2.0, 1.0]
@@ -95,7 +101,7 @@ agents:
     pitch_max_deg: 35.0
     roll_max_deg: 35.0
     tilt_smoothing: 0.5
-   
+  
     sensors:
       gps:
         enabled: true
@@ -110,8 +116,31 @@ agents:
         gravity: 9.81
 
       lidar:
-        enabled: false
+        enabled: true
+        max_distance: 20.0
+        angle_resolution: 2.0   # Degrés entre chaque rayon (plus c'est petit, plus c'est précis mais lent)
+        fov_horizontal: 90.0    # Cone de 90 degrés devant (de -45 à +45)
+        fov_vertical: 30.0      # Cone de 30 degrés vertical (de -15 à +15)
+      
+      
+    planner_config:
+  # Délimitation du monde pour la recherche de chemins
+      world_bounds:
+        x: [-5.0, 5.0]  # x_min à x_max (10 mètres de large)
+        y: [-5.0, 5.0]  # y_min à y_max (10 mètres de profondeur)
+        z: [0.0, 3.0]   # z_min à z_max (3 mètres de haut)
 
+  # Distance maximale d'extension à chaque étape RRT
+      step_size: 1
+
+  # Nombre d'itérations pour la recherche RRT*
+      max_iter: 200
+
+  # Marge de sécurité autour des obstacles (doit être > rayon du drone)
+      safe_distance: 1
+
+  # Rayon de recherche pour le 'rewiring' RRT*
+      search_radius: 3.0
 
     components:
       controller_x:
