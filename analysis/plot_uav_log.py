@@ -1,203 +1,120 @@
-#!/usr/bin/env python3
-"""
-plot_uav_log.py
-
-Simple log analysis/plot script for the UAV simulation.
-
-Usage examples:
-    python analysis/plot_uav_log.py
-    python analysis/plot_uav_log.py logs/drone_0_log.csv
-    python analysis/plot_uav_log.py --file logs/drone_0_log.csv
-"""
-
-import argparse
-import os
-
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D)
+import numpy as np
+import argparse
+import os
+from matplotlib.patches import Ellipse
 
-
-def load_log(csv_path: str) -> pd.DataFrame:
-    if not os.path.isfile(csv_path):
-        raise FileNotFoundError(f"Log file not found: {csv_path}")
-    df = pd.read_csv(csv_path)
-    if "t" not in df.columns:
-        raise ValueError("CSV log must contain a 't' column (time).")
-    return df
-
-
-def has_valid_columns(df: pd.DataFrame, cols: list[str]) -> bool:
-    """Return True if all columns exist and are not all NaN."""
-    for c in cols:
-        if c not in df.columns:
-            return False
-    all_nan = df[cols].isna().all().all()
-    return not all_nan
-
-
-def plot_trajectories_3d(df: pd.DataFrame):
-    """Plot 3D trajectories: true, GPS, EKF (if available)."""
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-    fig.suptitle("3D Trajectories")
-
-    # True trajectory
-    if has_valid_columns(df, ["x_true", "y_true", "z_true"]):
-        ax.plot(df["x_true"], df["y_true"], df["z_true"], label="True")
-
-    # GPS trajectory
-    if has_valid_columns(df, ["x_gps", "y_gps", "z_gps"]):
-        ax.plot(df["x_gps"], df["y_gps"], df["z_gps"], linestyle="--", label="GPS")
-
-    # EKF trajectory
-    if has_valid_columns(df, ["x_ekf", "y_ekf", "z_ekf"]):
-        ax.plot(df["x_ekf"], df["y_ekf"], df["z_ekf"], linestyle=":", label="EKF")
-
-    ax.set_xlabel("X [m]")
-    ax.set_ylabel("Y [m]")
-    ax.set_zlabel("Z [m]")
-    ax.legend()
-    ax.grid(True)
-
-
-def plot_position_errors(df: pd.DataFrame):
-    """Plot norm of position error for GPS and EKF."""
-    t = df["t"].values
-
-    fig, ax = plt.subplots()
-    fig.suptitle("Position Error Norms")
-
-    # GPS error
-    if has_valid_columns(df, ["x_true", "y_true", "z_true",
-                              "x_gps", "y_gps", "z_gps"]):
-        dx = df["x_true"] - df["x_gps"]
-        dy = df["y_true"] - df["y_gps"]
-        dz = df["z_true"] - df["z_gps"]
-        err_gps = np.sqrt(dx**2 + dy**2 + dz**2)
-        ax.plot(t, err_gps, label="||True - GPS||")
-
-    # EKF error
-    if has_valid_columns(df, ["x_true", "y_true", "z_true",
-                              "x_ekf", "y_ekf", "z_ekf"]):
-        dx = df["x_true"] - df["x_ekf"]
-        dy = df["y_true"] - df["y_ekf"]
-        dz = df["z_true"] - df["z_ekf"]
-        err_ekf = np.sqrt(dx**2 + dy**2 + dz**2)
-        ax.plot(t, err_ekf, label="||True - EKF||")
-
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Position error [m]")
-    ax.grid(True)
-    ax.legend()
-
-
-def plot_distance_to_waypoint(df: pd.DataFrame):
-    """Plot distance to current waypoint index over time."""
-    if "dist_to_wp" not in df.columns:
-        return
-
-    t = df["t"].values
-    dist = df["dist_to_wp"].values
-
-    fig, ax = plt.subplots()
-    fig.suptitle("Distance to Active Waypoint")
-    ax.plot(t, dist)
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Distance [m]")
-    ax.grid(True)
-
-    # Overlay waypoint index as a step plot if available
-    if "wp_index" in df.columns:
-        ax2 = ax.twinx()
-        ax2.step(t, df["wp_index"], where="post", alpha=0.5)
-        ax2.set_ylabel("Waypoint index")
-
-
-def plot_control_commands(df: pd.DataFrame):
-    """Plot PID acceleration commands over time."""
-    if not has_valid_columns(df, ["ax_cmd", "ay_cmd", "az_cmd"]):
-        return
-
-    t = df["t"].values
-
-    fig, ax = plt.subplots()
-    fig.suptitle("PID Acceleration Commands")
-
-    ax.plot(t, df["ax_cmd"], label="ax_cmd")
-    ax.plot(t, df["ay_cmd"], label="ay_cmd")
-    ax.plot(t, df["az_cmd"], label="az_cmd")
-
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Acceleration command [m/s^2]")
-    ax.grid(True)
-    ax.legend()
-
-
-def plot_attitude_commands(df: pd.DataFrame):
-    """Plot commanded roll, pitch, yaw over time."""
-    if not has_valid_columns(df, ["roll_cmd", "pitch_cmd", "yaw_cmd"]):
-        return
-
-    t = df["t"].values
-
-    fig, ax = plt.subplots()
-    fig.suptitle("Commanded Attitude (roll/pitch/yaw)")
-
-    ax.plot(t, df["roll_cmd"], label="roll_cmd")
-    ax.plot(t, df["pitch_cmd"], label="pitch_cmd")
-    ax.plot(t, df["yaw_cmd"], label="yaw_cmd")
-
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Angle [rad]")
-    ax.grid(True)
-    ax.legend()
+def draw_covariance_ellipse(ax, mean_x, mean_y, cov_xx, cov_yy, cov_xy, n_std=3.0, color='red', alpha=0.3):
+    """
+    Dessine une ellipse de covariance à n_std sigma.
+    """
+    # Construction de la matrice de covariance 2x2
+    cov = np.array([[cov_xx, cov_xy], 
+                    [cov_xy, cov_yy]])
+    
+    # Valeurs propres et vecteurs propres
+    vals, vecs = np.linalg.eigh(cov)
+    
+    # L'ordre des eigenvalues donne l'angle et la taille
+    order = vals.argsort()[::-1]
+    vals = vals[order]
+    vecs = vecs[:, order]
+    
+    # Angle en degrés
+    theta = np.degrees(np.arctan2(*vecs[:, 0][::-1]))
+    
+    # Largeur et hauteur (diamètre = 2 * n_std * écart-type)
+    # Ecart-type = sqrt(valeur propre)
+    width, height = 2 * n_std * np.sqrt(vals)
+    
+    ell = Ellipse(xy=(mean_x, mean_y),
+                  width=width, height=height,
+                  angle=theta, color=color, alpha=alpha)
+    ax.add_patch(ell)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot UAV simulation logs.")
-    # Optionnel : --file / -f
-    parser.add_argument(
-        "--file",
-        "-f",
-        dest="file",
-        type=str,
-        default=None,
-        help="Path to CSV log file.",
-    )
-    # Argument positionnel optionnel (pour permettre: python plot_uav_log.py logs/drone_0_log.csv)
-    parser.add_argument(
-        "file_positional",
-        nargs="?",
-        default=None,
-        help="Path to CSV log file (positional).",
-    )
-
+    parser = argparse.ArgumentParser(description="Trace les logs du drone avec Ellipses EKF.")
+    parser.add_argument("--file", type=str, default="logs/drone_0_log.csv", help="Chemin du CSV")
     args = parser.parse_args()
 
-    # Priorité : argument positionnel, puis --file, puis défaut
-    if args.file_positional is not None:
-        csv_path = args.file_positional
-    elif args.file is not None:
-        csv_path = args.file
-    else:
-        csv_path = "logs/drone_0_log.csv"
+    if not os.path.exists(args.file):
+        print(f"Fichier introuvable : {args.file}")
+        return
 
-    df = load_log(csv_path)
-    print(f"Loaded log file: {csv_path}")
-    print(f"Columns: {list(df.columns)}")
+    df = pd.read_csv(args.file)
+    print(f"Chargement de {len(df)} lignes.")
 
-    # Create plots
-    plot_trajectories_3d(df)
-    plot_position_errors(df)
-    plot_distance_to_waypoint(df)
-    plot_control_commands(df)
-    plot_attitude_commands(df)
+    # Nettoyage des données (supprimer les lignes sans EKF si besoin)
+    # df = df.dropna(subset=['x_ekf', 'P_xx'])
 
-    # Show all figures
+    fig, axs = plt.subplots(2, 1, figsize=(10, 10))
+
+    # --- PLOT 1 : TRAJECTOIRE X-Y ---
+    ax_traj = axs[0]
+    ax_traj.set_title("Trajectoire 2D : Vérité vs GPS vs EKF")
+    
+    # Vérité Terrain
+    ax_traj.plot(df["x_true"], df["y_true"], 'k-', linewidth=2, label="Vérité Terrain")
+    
+    # GPS (points)
+    ax_traj.plot(df["x_gps"], df["y_gps"], 'g.', markersize=2, alpha=0.3, label="GPS (Mesure)")
+    
+    # EKF
+    ax_traj.plot(df["x_ekf"], df["y_ekf"], 'b--', linewidth=1.5, label="EKF (Fusion)")
+
+    # Dessin des ellipses EKF
+    # On ne dessine pas à chaque pas de temps pour ne pas saturer le graphe
+    step = 50 # Dessine une ellipse toutes les 50 frames (~0.2s)
+    
+    if "P_xx" in df.columns:
+        indices = range(0, len(df), step)
+        first_ellipse = True
+        for i in indices:
+            row = df.iloc[i]
+            if np.isnan(row["x_ekf"]) or np.isnan(row["P_xx"]):
+                continue
+                
+            label = "Incertitude 3$\sigma$" if first_ellipse else None
+            draw_covariance_ellipse(
+                ax_traj, 
+                row["x_ekf"], row["y_ekf"], 
+                row["P_xx"], row["P_yy"], row["P_xy"], 
+                n_std=3.0, 
+                color='blue', 
+                alpha=0.1
+            )
+            first_ellipse = False
+            # Point central de l'ellipse
+            # ax_traj.plot(row["x_ekf"], row["y_ekf"], 'b+', markersize=5, alpha=0.5)
+
+    ax_traj.set_xlabel("X (m)")
+    ax_traj.set_ylabel("Y (m)")
+    ax_traj.legend()
+    ax_traj.axis('equal')
+    ax_traj.grid(True)
+
+    # --- PLOT 2 : ERREURS ---
+    ax_err = axs[1]
+    ax_err.set_title("Erreur de Position dans le temps")
+    
+    time = df["t"]
+    
+    # Calcul des erreurs distance euclidienne
+    err_gps = np.sqrt((df["x_true"] - df["x_gps"])**2 + (df["y_true"] - df["y_gps"])**2)
+    err_ekf = np.sqrt((df["x_true"] - df["x_ekf"])**2 + (df["y_true"] - df["y_ekf"])**2)
+    
+    ax_err.plot(time, err_gps, 'g-', alpha=0.4, label="Erreur GPS")
+    ax_err.plot(time, err_ekf, 'b-', linewidth=2, label="Erreur EKF")
+    
+    ax_err.set_xlabel("Temps (s)")
+    ax_err.set_ylabel("Erreur (m)")
+    ax_err.legend()
+    ax_err.grid(True)
+
+    plt.tight_layout()
     plt.show()
-
 
 if __name__ == "__main__":
     main()

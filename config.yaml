@@ -58,14 +58,6 @@ agents:
     name: "drone_0"
     urdf_path: "assets/quadrotor.urdf"
     start_pos: [0.0, 0.0, 0.2]
-    start_orn_euler: [0.0, 0.0, 0.0]
-    process_noise_std: 0.01
-
-    physics:
-      thrust_coeff: 2.2e-8
-      max_rpm: 25000.0
-      motor_link_indices: [0, 1, 2, 3]
-
 
     waypoints:
       - [0.0, 0.0, 1.0]
@@ -77,37 +69,29 @@ agents:
       - [0.0, 0.0, 1.0]
 
 
-    # Paramètres de dynamique "simple"
+  # Dynamique
     acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-
-
-    # Orientation réaliste
-    yaw_align_gain: 4.0
     yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-
-
     tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
-   
+
     sensors:
       gps:
         enabled: true
-        position_noise_std: 0.1
-        velocity_noise_std: 0.05
-
+        # On met du bruit pour voir l'intérêt de l'EKF
+        position_noise_std: 0.3 
+        velocity_noise_std: 0.1
 
       imu:
         enabled: true
-        accel_noise_std: 0.3
-        gyro_noise_std: 0.03
-        gravity: 9.81
+        accel_noise_std: 0.2
+        gyro_noise_std: 0.01
+
+      ekf:
+        enabled: true
+        # Paramètres pour le filtre (doivent être cohérents avec les capteurs)
+        r_pos: 0.3
+        accel_noise_std: 0.2
+
 
       lidar:
         enabled: false
