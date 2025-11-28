@@ -59,6 +59,11 @@ agents:
     urdf_path: "assets/quadrotor.urdf"
     start_pos: [0.0, 0.0, 0.2]
 
+    logging:
+      enabled: true
+      dir: "logs"
+      file: "drone_0_log.csv"
+
     waypoints:
       - [0.0, 0.0, 1.0]
       - [2.0, 1.0, 1.0]
