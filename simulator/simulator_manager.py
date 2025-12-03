@@ -8,7 +8,7 @@ from environment.world import World
 from entities.uav import UAV
 from entities.obstacles import CubeObstacle, SphericalObstacle, CylindricalObstacle
 from swarm.swarm import Swarm
-from Control.Path_planning import RRT3DPlanner
+
 
 
 class SimulationManager:
