@@ -122,25 +122,16 @@ agents:
         fov_horizontal: 90.0    # Cone de 90 degrés devant (de -45 à +45)
         fov_vertical: 30.0      # Cone de 30 degrés vertical (de -15 à +15)
       
-      
-    planner_config:
-  # Délimitation du monde pour la recherche de chemins
-      world_bounds:
-        x: [-5.0, 5.0]  # x_min à x_max (10 mètres de large)
-        y: [-5.0, 5.0]  # y_min à y_max (10 mètres de profondeur)
-        z: [0.0, 3.0]   # z_min à z_max (3 mètres de haut)
-
-  # Distance maximale d'extension à chaque étape RRT
-      step_size: 1
-
-  # Nombre d'itérations pour la recherche RRT*
-      max_iter: 200
-
-  # Marge de sécurité autour des obstacles (doit être > rayon du drone)
-      safe_distance: 1
-
-  # Rayon de recherche pour le 'rewiring' RRT*
-      search_radius: 3.0
+    rrt_star:
+      world_bounds: {
+                "x": [-10, 10], # Ajustez ces limites selon la taille de votre monde
+                "y": [-10, 10],
+                "z": [0.1, 5.0]
+            }
+      step_size: 0.5
+      max_iter: 300        # Limité pour garder le temps réel acceptable
+      safe_distance: 0.8   # Marge de sécurité autour des obstacles
+      search_radius: 2.0
 
     components:
       controller_x:

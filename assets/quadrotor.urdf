@@ -11,38 +11,115 @@
     </inertial>
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
-      <geometry><box size="0.06 0.06 0.02"/></geometry> 
-      <material name="grey"><color rgba=".5 .5 .5 1"/></material> 
+      <geometry>
+        <box size="0.06 0.06 0.02"/>
+      </geometry> 
+      <material name="grey">
+        <color rgba=".5 .5 .5 1"/>
+      </material> 
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
-      <geometry><cylinder radius=".06" length=".025"/></geometry>
+      <geometry>
+        <cylinder radius=".06" length=".025"/>
+      </geometry>
     </collision>
   </link>
 
   <link name="prop0_link">
-    <inertial><origin rpy="0 0 0" xyz="0.028 -0.028 0"/><mass value="0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.028 -0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.028 -0.028 0.01"/>
+      <geometry>
+        <cylinder radius="0.023" length="0.002"/>
+      </geometry>
+      <material name="red">
+        <color rgba="1 0 0 1"/>
+      </material>
+    </visual>
   </link>
-  <joint name="prop0_joint" type="fixed"><parent link="base_link"/><child link="prop0_link"/></joint>
+  <joint name="prop0_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="prop0_link"/>
+  </joint>
 
   <link name="prop1_link">
-    <inertial><origin rpy="0 0 0" xyz="-0.028 -0.028 0"/><mass value="0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.028 -0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.028 -0.028 0.01"/>
+      <geometry>
+        <cylinder radius="0.023" length="0.002"/>
+      </geometry>
+      <material name="black">
+        <color rgba="0 0 0 1"/>
+      </material>
+    </visual>
   </link>
-  <joint name="prop1_joint" type="fixed"><parent link="base_link"/><child link="prop1_link"/></joint>
+  <joint name="prop1_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="prop1_link"/>
+  </joint>
 
   <link name="prop2_link">
-    <inertial><origin rpy="0 0 0" xyz="-0.028 0.028 0"/><mass value="0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.028 0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.028 0.028 0.01"/>
+      <geometry>
+        <cylinder radius="0.023" length="0.002"/>
+      </geometry>
+      <material name="black">
+        <color rgba="0 0 0 1"/>
+      </material>
+    </visual>
   </link>
-  <joint name="prop2_joint" type="fixed"><parent link="base_link"/><child link="prop2_link"/></joint>
+  <joint name="prop2_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="prop2_link"/>
+  </joint>
 
   <link name="prop3_link">
-    <inertial><origin rpy="0 0 0" xyz="0.028 0.028 0"/><mass value="0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.028 0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0.028 0.028 0.01"/>
+      <geometry>
+        <cylinder radius="0.023" length="0.002"/>
+      </geometry>
+      <material name="red">
+        <color rgba="1 0 0 1"/>
+      </material>
+    </visual>
   </link>
-  <joint name="prop3_joint" type="fixed"><parent link="base_link"/><child link="prop3_link"/></joint>
+  <joint name="prop3_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="prop3_link"/>
+  </joint>
 
   <link name="center_of_mass_link">
-    <inertial><origin rpy="0 0 0" xyz="0 0 0"/><mass value="0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
   </link>
-  <joint name="center_of_mass_joint" type="fixed"><parent link="base_link"/><child link="center_of_mass_link"/></joint>
+  <joint name="center_of_mass_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="center_of_mass_link"/>
+  </joint>
 
 </robot>
