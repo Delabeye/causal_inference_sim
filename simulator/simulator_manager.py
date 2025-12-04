@@ -8,8 +8,7 @@ from environment.world import World
 from entities.uav import UAV
 from entities.obstacles import CubeObstacle, SphericalObstacle, CylindricalObstacle
 from swarm.swarm import Swarm
-
-
+from entities.static_sensor import RadarStation
 
 class SimulationManager:
     """
@@ -53,12 +52,15 @@ class SimulationManager:
                 physicsClientId=self.physics_client_id,
             )
 
-        # Liste de tous les UAV
-        self.agents: list[UAV] = []
+        # Liste de tous les agents (UAV + radars)
+        self.agents: list[UAV | RadarStation] = []
 
         # Liste des essaims (on n'en crée qu'un, mais on garde une liste)
         self.swarms: list[Swarm] = []
-
+        
+        # Liste des radars
+        self.radars: list[RadarStation] = []
+        
         # 3. Charger scénario (obstacles + drones + objectifs éventuels)
         self.load_scenario()
 
@@ -106,6 +108,11 @@ class SimulationManager:
                     dt=self.dt,
                 )
                 self.agents.append(uav)
+
+            elif agent_cfg.get("type") == "radar":
+                radar = RadarStation(config=agent_cfg, physics_client_id=self.physics_client_id, dt=self.dt)
+                self.agents.append(radar) # On l'ajoute à la boucle principale pour le think_and_act
+                self.radars.append(radar)
 
         # Objectifs (ancienne mécanique, on la garde pour compatibilité)
         for objective in self.config.get("objectives", []):

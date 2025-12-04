@@ -7,7 +7,7 @@ class Agent:
         self.p = p
         self.dt = dt
         self.physics_client_id = physics_client_id
-
+        
         # Chemin relatif -> absolu pour éviter les erreurs
         if not os.path.exists(urdf_path):
             base = os.path.dirname(os.path.abspath(__file__))
