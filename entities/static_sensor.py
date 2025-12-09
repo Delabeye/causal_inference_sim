@@ -61,8 +61,4 @@ class RadarStation(Agent):
                 # Action lors de la détection (Log, Alerte, etc.)
                 print(f"[RADAR '{self.name}'] 🚨 DÉTECTION : '{agent.name}' à {dist:.2f}m !")
                 
-                # Optionnel : Changer la couleur du radar quand il détecte
-                p.changeVisualShape(self.bodyId, -1, rgbaColor=[1, 1, 0, 1], physicsClientId=self.physics_client_id)
-            else:
-                # Retour à la couleur normale
-                p.changeVisualShape(self.bodyId, -1, rgbaColor=[0.8, 0, 0, 1], physicsClientId=self.physics_client_id)
+                

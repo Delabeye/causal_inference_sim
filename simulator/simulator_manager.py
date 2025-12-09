@@ -70,10 +70,10 @@ class SimulationManager:
     # ------------------------------------------------------------------
     def load_scenario(self):
         print("Chargement du scénario...")
-
+        known_obstacles_agent = []
+        self.known_obstacles_config = self.config.get("world", {}).get("obstacles", [])
         # Obstacles
-        world_cfg = self.config.get("world", {})
-        for obs_cfg in world_cfg.get("obstacles", []):
+        for obs_cfg in self.known_obstacles_config:
             otype = obs_cfg.get("type")
             if otype == "cube":
                 obstacle = CubeObstacle(
@@ -81,6 +81,7 @@ class SimulationManager:
                     length=obs_cfg["length"],
                     width=obs_cfg["width"],
                     height=obs_cfg["height"],
+                    obstacle_id=obs_cfg["id"]
                 )
                 self.world.add_cube_obstacle(obstacle)
 
@@ -88,6 +89,7 @@ class SimulationManager:
                 obstacle = SphericalObstacle(
                     center=obs_cfg["center"],
                     radius=obs_cfg["radius"],
+                    obstacle_id=obs_cfg["id"]
                 )
                 self.world.add_sphere_obstacle(obstacle)
 
@@ -96,9 +98,12 @@ class SimulationManager:
                     center=obs_cfg["center"],
                     radius=obs_cfg["radius"],
                     height=obs_cfg["height"],
+                    obstacle_id=obs_cfg["id"]
                 )
                 self.world.add_cylindrical_obstacle(obstacle)
-
+        for obs in self.known_obstacles_config :
+            if obs.get("knowledge", False) == True :
+                known_obstacles_agent.append(obs)
         # Drones
         for agent_cfg in self.config.get("agents", []):
             if agent_cfg.get("type") == "uav":
@@ -106,6 +111,7 @@ class SimulationManager:
                     config=agent_cfg,
                     physics_client_id=self.physics_client_id,
                     dt=self.dt,
+                    known_obstacles_config=known_obstacles_agent,
                 )
                 self.agents.append(uav)
 

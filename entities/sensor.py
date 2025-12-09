@@ -197,11 +197,13 @@ class LidarSensor:
         
         # 5. Filtrage des impacts
         detected_points = []
-        for i, res in enumerate(results):
+        for _, res in enumerate(results):
             # res structure: (objectUniqueId, linkIndex, hitFraction, hitPosition, hitNormal)
             hit_id = res[0]
             if hit_id >= 0: # Si on a touché un objet (id >= 0)
                 hit_pos = np.array(res[3])
-                detected_points.append(hit_pos)
+                if hit_pos[2]>0.01:  # Filtre pour éviter les points trop proches
+                    hit_id = [round(coord, 3) for coord in hit_pos]
+                    detected_points.append(hit_pos)
                 
         return detected_points
