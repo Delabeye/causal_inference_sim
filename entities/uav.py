@@ -3,6 +3,8 @@ import csv
 import threading
 import pybullet as p
 import numpy as np
+
+# Imports Utilitaires & Contrôle
 from utilities.utilities import point_in_cube, point_in_cylinder
 from entities.agent import Agent
 from entities.sensor import GPSSensor, IMUSensor, LidarSensor
@@ -25,8 +27,8 @@ class UAV(Agent):
         start_orn = p.getQuaternionFromEuler(config.get("start_orn_euler", [0,0,0]))
         super().__init__(urdf_path, start_pos, start_orn, physics_client_id, self.dt)
         self._sim_time = 0.0
-        self.Calculation_number = 0
-        # Physique
+        
+        # --- PHYSIQUE ---
         self.KF = self.config.get("physics", {}).get("thrust_coeff", 6.11e-8)
         self.KM = self.config.get("physics", {}).get("torque_coeff", 1.5e-9)
         self.G = 9.81
@@ -36,259 +38,271 @@ class UAV(Agent):
         self.ctrl = DSLPIDControl(drone_model=DroneModel.CF2X)
         self.last_rpms = np.zeros(4)
         
-        # Navigation
+        # --- NAVIGATION ---
         wp_list = config.get("waypoints", [])
         if not wp_list: wp_list = [[0,0,1]]
-        first_wp = np.array(start_pos) + np.array([0,0,1])
+        # On ajoute le point de départ pour stabilisation initiale
+        first_wp = np.array(start_pos)+np.array([0,0,1])
         self.waypoints = [first_wp] + [np.array(w) for w in wp_list]
         self.wp_idx = 0
         
-        # --- Mémoire pour le Yaw (Stabilisation) ---
-        self.target_yaw_cache = 0.0 # On garde en mémoire le dernier angle valide
+        # --- OBSTACLES & PLANNING ---
         self.obs_dic = known_obstacles_config
+        # Nuage de points (Statique + Dynamique)
         self.obstacles = self._discretize_obstacles(known_obstacles_config)
-        # --- PLANIFICATEUR A* ---
-        a_config = {
-            "world_bounds": {"x": [-10, 10], "y": [-10, 10], "z": [0.1, 5.0]},
-        }
+        self.target_yaw_cache = 0.0
+        
+        a_config = {"world_bounds": {"x": [-10, 10], "y": [-10, 10], "z": [0.1, 5.0]}}
         self.planner = AStarPlanner(self.config.get("astar", a_config))
-        self.replan_timer = 0 
-        self.active_path = [] 
-        print(self.obs_dic)
-        # Multithreading
-        self.is_planning = False
-        self.planning_thread = None
+        
+        # États du Planning
+        self.active_path = []
+        self.is_planning = False      # Drapeau : True si un thread calcule
+        self.planning_thread = None   # Référence du thread
+        self.replan_timer = 0         # Cooldown pour éviter de spammer
+        self.Calculation_fail_count = 0
 
-        # Capteurs
+        # --- CAPTEURS ---
         sens = config.get("sensors", {})
         self.ekf = GPSEKF(dt); self.ekf.x[:3] = start_pos
         self.gps = GPSSensor(sens.get("gps", {}))
         self.imu = IMUSensor(sens.get("imu", {}))
-        self.lidar = LidarSensor(sens.get("lidar", {})) 
+        self.lidar = LidarSensor(sens.get("lidar", {}))
         
+        # Fréquence Lidar (10Hz)
         lidar_freq = sens.get("lidar", {}).get("frequency", 10.0)
         self.lidar_period = 1.0 / lidar_freq
-        self.last_lidar_time = -self.lidar_period # Pour scanner dès t=
+        self.last_lidar_time = -self.lidar_period
+        
         # Logs
         self.logging_enabled = True
         self.log_file = os.path.join("logs", f"{self.name}.csv")
         os.makedirs("logs", exist_ok=True)
         if os.path.exists(self.log_file): os.remove(self.log_file)
         
+        # Damping physique nul (on gère le drag nous-même)
         p.changeDynamics(self.bodyId, -1, linearDamping=0, angularDamping=0)
 
+    # ----------------------------------------------------------------------
+    # GESTION OBSTACLES & PLANNING ASYNCHRONE
+    # ----------------------------------------------------------------------
+
     def _discretize_obstacles(self, obstacles_config):
-        """
-        Convertit les formes géométriques en nuage de points pour la grille A*.
-        """
         points = []
         res = 0.25 
-        
         for obs in obstacles_config:
             center = np.array(obs["center"])
             otype = obs["type"]
-            
+            # Discrétisation simplifiée
             if otype == "cube":
                 l, w, h = obs["length"], obs["width"], obs["height"]
-                xs = np.arange(center[0] - l/2, center[0] + l/2 + res, res)
-                ys = np.arange(center[1] - w/2, center[1] + w/2 + res, res)
-                zs = np.arange(center[2] - h/2, center[2] + h/2 + res, res)
+                xs = np.arange(center[0]-l/2, center[0]+l/2+res, res)
+                ys = np.arange(center[1]-w/2, center[1]+w/2+res, res)
+                zs = np.arange(center[2]-h/2, center[2]+h/2+res, res)
                 for x in xs:
                     for y in ys:
-                        for z in zs:
-                            points.append([x, y, z])
-                            
+                        for z in zs: points.append([x, y, z])
             elif otype == "sphere":
                 r = obs["radius"]
-                xs = np.arange(center[0] - r, center[0] + r + res, res)
-                ys = np.arange(center[1] - r, center[1] + r + res, res)
-                zs = np.arange(center[2] - r, center[2] + r + res, res)
+                # Approximation cubique pour aller vite au démarrage
+                xs = np.arange(center[0]-r, center[0]+r+res, res)
+                ys = np.arange(center[1]-r, center[1]+r+res, res)
+                zs = np.arange(center[2]-r, center[2]+r+res, res)
                 for x in xs:
                     for y in ys:
                         for z in zs:
-                            if np.linalg.norm(np.array([x,y,z]) - center) <= r:
-                                points.append([x, y, z])
-
+                            if np.linalg.norm(np.array([x,y,z])-center) <= r: points.append([x, y, z])
             elif otype == "cylinder":
                 r, h = obs["radius"], obs["height"]
-                xs = np.arange(center[0] - r, center[0] + r + res, res)
-                ys = np.arange(center[1] - r, center[1] + r + res, res)
-                zs = np.arange(center[2] - h/2, center[2] + h/2 + res, res)
+                xs = np.arange(center[0]-r, center[0]+r+res, res)
+                ys = np.arange(center[1]-r, center[1]+r+res, res)
+                zs = np.arange(center[2]-h/2, center[2]+h/2+res, res)
                 for x in xs:
                     for y in ys:
-                        if np.linalg.norm(np.array([x,y]) - center[:2]) <= r:
-                            for z in zs:
-                                points.append([x, y, z])
-                                
+                        if np.linalg.norm(np.array([x,y])-center[:2]) <= r:
+                            for z in zs: points.append([x, y, z])
         return points
 
+    def _trigger_planning(self, start_pos, target_pos, obstacles):
+        """ Lance le calcul A* dans un thread séparé """
+        if self.is_planning: 
+            return # Déjà occupé
+
+        self.is_planning = True
+        print(f"[{self.name}] ⏳ Démarrage Thread A*...")
+        
+        # On passe une COPIE des obstacles pour éviter les conflits mémoire pendant que le lidar tourne
+        obs_copy = list(obstacles) 
+        
+        self.planning_thread = threading.Thread(
+            target=self._run_async_plan, 
+            args=(start_pos, target_pos, obs_copy)
+        )
+        self.planning_thread.daemon = True # Le thread mourra si le programme quitte
+        self.planning_thread.start()
+
     def _run_async_plan(self, start_pos, target_pos, obstacles):
+        """ Code exécuté dans le Thread """
         try:
             path = self.planner.plan(start_pos, target_pos, obstacles, smooth=True)
             if path and len(path) > 0:
                 self.active_path = path 
-                print(f"[{self.name}] A* succès : {len(path)} points.")
+                print(f"[{self.name}] ✅ A* Terminé : {len(path)} points.")
+                self.Calculation_fail_count = 0
+            else:
+                print(f"[{self.name}] ❌ A* Échec (Pas de chemin).")
+                self.Calculation_fail_count += 1
         except Exception as e:
-            print(f"[{self.name}] Erreur planning : {e}")
+            print(f"[{self.name}] 💥 Erreur Thread A*: {e}")
         finally:
+            # On libère le drapeau à la fin (succès ou erreur)
             self.is_planning = False 
 
-    def _analyze_target_accessibility(self, start_pos, target_pos,obs):
+    def _analyze_target_accessibility(self, start_pos, target_pos, obs):
+        """ Vérifie géométriquement si la route est libre """
+        # 1. Vérif Obstacles Connus (Dictionnaires)
         for obstacle in self.obs_dic:
             if obstacle["type"] == "cube":
-                if point_in_cube(target_pos, obstacle):
-                    return "INVALID"
-            if obstacle["type"] == "sphere":
-                if np.linalg.norm(np.array(target_pos) - np.array(obstacle["center"])) <= obstacle["radius"]:
-                    return "INVALID"
-            if obstacle["type"] == "cylinder":
-                if point_in_cylinder(target_pos, obstacle):
-                    return "INVALID"
-        if len(obs) > 0:
+                if point_in_cube(target_pos, obstacle): return "INVALID"
+            elif obstacle["type"] == "sphere":
+                if np.linalg.norm(np.array(target_pos) - np.array(obstacle["center"])) <= obstacle["radius"]: return "INVALID"
+            elif obstacle["type"] == "cylinder":
+                if point_in_cylinder(target_pos, obstacle): return "INVALID"
+        
+        # 2. Vérif Nuage de Points (Lidar)
+        # On prend un sous-ensemble si trop de points pour ne pas laguer ici aussi
+        check_obs = obs if len(obs) < 2000 else obs[::5] # Optimisation
+        
+        if len(check_obs) > 0:
             vec_dir = target_pos - start_pos
             dist_target = np.linalg.norm(vec_dir)
             if dist_target > 0.1:
                 vec_dir /= dist_target
-                for pt in obs:
-                    pt_vec = pt - start_pos
+                for pt in check_obs:
+                    pt_vec = np.array(pt) - start_pos
                     proj = np.dot(pt_vec, vec_dir)
-                    # Si le point est devant nous (entre start et target)
                     if 0 < proj < dist_target:
                         dist_ortho = np.linalg.norm(pt_vec - proj * vec_dir)
-                        # Si l'obstacle est à moins de 60cm de l'axe de vol
-                        if dist_ortho < 0.6: 
+                        if dist_ortho < 0.6: # Marge sécurité
                             return "BLOCKED"
         return "CLEAR"
 
+    # ----------------------------------------------------------------------
+    # BOUCLE PRINCIPALE (240 Hz)
+    # ----------------------------------------------------------------------
     def think_and_act(self):
         if not p.isConnected(self.physics_client_id): return
         
-        # 1. État
+        # 1. État & Perception
         gt = self.get_ground_truth_state()
         pos, vel = gt["pos"], gt["vel"]
         orn_q, ang_vel = gt["orn_q"], gt["ang_vel"]
         rpy = p.getEulerFromQuaternion(orn_q)
         
-        # 2. Perception
-        roll, pitch, yaw = rpy
+        # Lidar (10 Hz)
         if (self._sim_time - self.last_lidar_time) >= self.lidar_period:
             self.last_lidar_time = self._sim_time
-            # Scan Lidar réel
-            new_pts = self.lidar.measure(pos, roll, yaw, pitch)
+            new_pts = self.lidar.measure(pos, rpy[0], rpy[2], rpy[1])
             if len(new_pts) > 0:
-                self.obstacles += new_pts
-        global_target = self.waypoints[self.wp_idx]
-
-        # --- 3. ANALYSE ET GESTION DU CHEMIN ---
-        is_cruising = False 
+                self.obstacles += new_pts # Accumulation pour la carte
         
-        if len(self.active_path) == 0 and not self.is_planning and self.replan_timer <= 0:
-            status = self._analyze_target_accessibility(pos, global_target,self.obstacles)
-            if self.Calculation_number == 10 : 
-                status = "INVALID"
-            if status == "INVALID":
-                print(f"[{self.name}] ⚠️ Cible {self.wp_idx} inaccessible. SKIP !")
-                if self.wp_idx < len(self.waypoints)-1:
-                    self.wp_idx += 1
-                    global_target = self.waypoints[self.wp_idx]
-            elif status == "BLOCKED":
-                if len(self.obstacles) > 0: 
-                    print(f"[{self.name}] Chemin bloqué. Calcul A*...")
-                    self.is_planning = True 
-                    self.replan_timer = 50 
-                    self.Calculation_number += 1
-                    self.planning_thread = threading.Thread(
-                        target=self._run_async_plan, 
-                        args=(pos, global_target, self.obstacles)
-                    )
-                    self.planning_thread.start()
-
-        # --- SUIVI DU CHEMIN ---
-        if len(self.active_path) > 0:
-            target_pos = self.active_path[0]
-            dist_to_local = np.linalg.norm(target_pos - pos)
-            acceptance = 0.6 if len(self.active_path) > 1 else 0.2
+        # ----------------------------------------------
+        # LOGIQUE HAUT NIVEAU
+        # ----------------------------------------------
+        
+        target_pos = pos # Par défaut : on reste là
+        target_vel = np.zeros(3) # Par défaut : stationnaire
+        
+        # Cas 1 : En cours de planification (Thread actif)
+        # -> DYNAMIQUE STATIONNAIRE (Freinage actif)
+        if self.is_planning:
+            # On demande au contrôleur de freiner et maintenir l'altitude
+            target_pos = pos 
+            target_vel = -0.5 * vel # Freinage amorti
             
-            if dist_to_local < acceptance:
-                self.active_path.pop(0)
-                if len(self.active_path) > 0:
-                    target_pos = self.active_path[0]
-                    is_cruising = True
-                else:
-                    target_pos = global_target
-                    is_cruising = False
-            else:
-                is_cruising = (len(self.active_path) > 1)
         else:
-            target_pos = global_target
-            is_cruising = False
+            # Cas 2 : Normal (Pas de calcul en cours)
             
+            # A. Gestion Waypoints Globaux
+            while self.wp_idx < len(self.waypoints):
+                global_target = self.waypoints[self.wp_idx]
+                
+                # Si on n'a pas de chemin local, on vérifie la cible globale
+                if len(self.active_path) == 0:
+                    status = self._analyze_target_accessibility(pos, global_target, self.obstacles)
+                    
+                    if status == "INVALID":
+                        print(f"[{self.name}] Cible {self.wp_idx} Mur. Skip.")
+                        self.wp_idx += 1
+                        continue # On re-boucle
+                    
+                    elif status == "BLOCKED":
+                        # Route bloquée -> On lance le thread
+                        if self.replan_timer <= 0:
+                            self._trigger_planning(pos, global_target, self.obstacles)
+                            self.replan_timer = 50 # Cooldown
+                        break # On sort de la boucle et on attend (mode stationnaire au prochain tour)
+                
+                break # Cible valide ou chemin existant
+
+            # B. Suivi de Chemin (Path Following)
+            if len(self.active_path) > 0:
+                local_target = self.active_path[0]
+                dist_local = np.linalg.norm(local_target - pos)
+                
+                if dist_local < 0.4: # Waypoint local atteint
+                    self.active_path.pop(0)
+                    if len(self.active_path) > 0:
+                        local_target = self.active_path[0]
+                    else:
+                        # Fin du chemin local, on vise le global
+                        if self.wp_idx < len(self.waypoints):
+                            local_target = self.waypoints[self.wp_idx]
+                
+                target_pos = local_target
+                target_vel = np.zeros(3) # On laisse le PID gérer la vitesse vers le point
+                
+            elif self.wp_idx < len(self.waypoints):
+                # Pas de chemin, on vise direct le global (si CLEAR)
+                target_pos = self.waypoints[self.wp_idx]
+                dist_global = np.linalg.norm(target_pos - pos)
+                
+                if dist_global < 0.2:
+                    print(f"[{self.name}] WP {self.wp_idx} Atteint.")
+                    self.wp_idx += 1
+                    # Le nouveau target sera pris au prochain cycle
+
         if self.replan_timer > 0: self.replan_timer -= 1
 
-        # --- 4. NAVIGATION GLOBALE ---
-        if len(self.active_path) == 0 and not self.is_planning:
-            dist_to_global = np.linalg.norm(global_target - pos)
-            if dist_to_global < 0.2:
-                if self.wp_idx < len(self.waypoints)-1:
-                    self.Calculation_number = 0
-                    self.wp_idx += 1
-                    print(f"[{self.name}] ✅ Waypoint {self.wp_idx} atteint. Suivant...")
-                    target_pos = self.waypoints[self.wp_idx]
-
-        # --- 5. COMMANDE STABILISÉE ---
+        # ----------------------------------------------
+        # COMMANDE BAS NIVEAU (PID)
+        # ----------------------------------------------
         
-        if self.is_planning:
-            if len(self.obstacles) > 0:
-                dist_critique = min([np.linalg.norm(pos - obs) for obs in self.obstacles])
-                if dist_critique < 0.6:
-                    target_pos = pos 
-                    target_vel_request = np.zeros(3) 
-                else:
-                    target_vel_request = -0.1 * vel 
-            else:
-                 target_vel_request = -0.1 * vel
-        else:
-            direction_vec = target_pos - pos
-            dist_final = np.linalg.norm(direction_vec)
-            
-            MAX_TARGET_DIST = 1.0
-            if dist_final > MAX_TARGET_DIST:
-                target_clamped = pos + (direction_vec / dist_final) * MAX_TARGET_DIST
-            else:
-                target_clamped = target_pos
-            
-            target_pos = target_clamped
-            
-            if is_cruising:
-                target_vel_request = np.zeros(3)
-            else:
-                # Approche finale : Freinage PLUS DOUX (-0.2 au lieu de -0.3)
-                target_vel_request = -0.2 * vel
-
-        # --- CALCUL DU YAW AVEC VERROUILLAGE (Stabilisation) ---
-        diff_vec = target_pos - pos
-        dist_planar = np.linalg.norm(diff_vec[:2])
+        # Calcul Vitesse/Cap
+        direction_vec = target_pos - pos
+        dist_final = np.linalg.norm(direction_vec)
         
-        # [CORRECTIF] : Si on est loin (> 0.5m), on calcule le cap.
-        # Sinon, on GARDE le cap précédent pour éviter la toupie.
-        if dist_planar > 0.5:
-            self.target_yaw_cache = np.arctan2(diff_vec[1], diff_vec[0])
+        # Clamp distance pour éviter survitesse
+        if dist_final > 1.0:
+            target_pos = pos + (direction_vec / dist_final) * 1.0
             
-        # On utilise toujours la valeur en cache (qui est soit à jour, soit figée si on est proche)
-        target_yaw = self.target_yaw_cache
+        # Orientation Yaw
+        if np.linalg.norm(direction_vec[:2]) > 0.5:
+            self.target_yaw_cache = np.arctan2(direction_vec[1], direction_vec[0])
 
         state_vec = np.hstack([pos, orn_q, rpy, vel, ang_vel, self.last_rpms])
         
-        rpm_action, _, _ = self.ctrl.computeControlFromState(
+        # Appel Contrôleur
+        rpms, _, _ = self.ctrl.computeControlFromState(
             control_timestep=self.dt, 
             state=state_vec, 
             target_pos=target_pos,
-            target_vel=target_vel_request,
-            target_rpy=np.array([0, 0, target_yaw]) 
+            target_vel=target_vel,
+            target_rpy=np.array([0, 0, self.target_yaw_cache]) 
         )
         
-        self._apply_lib_physics(rpm_action, gt)
-        self.last_rpms = rpm_action
+        self._apply_lib_physics(rpms, gt)
+        self.last_rpms = rpms
         self._sim_time += self.dt
         self._log(pos)
 
@@ -300,9 +314,10 @@ class UAV(Agent):
 
         for i in range(4):
             p.applyExternalForce(self.bodyId, i, forceObj=[0, 0, forces[i]], posObj=[0, 0, 0], flags=p.LINK_FRAME, physicsClientId=self.physics_client_id)
-            
+        
         try:
             p.applyExternalTorque(self.bodyId, 4, torqueObj=[0, 0, z_torque], flags=p.LINK_FRAME, physicsClientId=self.physics_client_id)
+            # Drag
             rot = np.array(p.getMatrixFromQuaternion(gt["orn_q"])).reshape(3,3)
             drag = -1 * self.DRAG_COEFF * np.sum(2 * np.pi * rpms / 60)
             f_drag = rot @ (drag * (rot.T @ gt["vel"]))
