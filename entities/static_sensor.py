@@ -2,6 +2,7 @@ import pybullet as p
 import numpy as np
 from entities.agent import Agent
 
+
 class RadarStation(Agent):
     def __init__(self, config: dict, physics_client_id: int, dt: float):
         self.config = config
@@ -12,7 +13,7 @@ class RadarStation(Agent):
         # On utilise une forme visuelle simple (cylindre ou cube)
         start_pos = self.config.get("pos", [0, 0, 0])
         start_orn = p.getQuaternionFromEuler([0, 0, 0])
-        urdf_path = self.config.get("urdf_path", "assets/cube.urdf")
+        urdf_path = self.config.get("urdf_path", "assets/radar.urdf")
         super().__init__(urdf_path, start_pos, start_orn, physics_client_id, dt)
         
         # Rendre l'objet statique (Masse = 0)
@@ -39,10 +40,6 @@ class RadarStation(Agent):
         self.detected_agents = []
         my_pos, _ = p.getBasePositionAndOrientation(self.bodyId, physicsClientId=self.physics_client_id)
         my_pos = np.array(my_pos)
-
-        # DEBUG: Dessiner la zone de détection (sphère filaire rouge)
-        # Note: PyBullet n'a pas de "drawSphere" simple persistant, on peut utiliser des lignes
-        # Pour l'instant, on affiche juste dans la console.
 
         for agent in self.targets:
             # On ne se détecte pas soi-même
