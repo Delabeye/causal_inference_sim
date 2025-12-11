@@ -1,0 +1,34 @@
+flowchart LR
+
+  A[Previous state  X_k-1  P_k-1]:::state
+
+  subgraph PREDICTION_IMU
+    IMU[[IMU  accel  gyro]]:::sensor
+    PRED[Prediction using IMU 240Hz]:::pred
+    IMU --> PRED
+  end
+
+  Xpred[Predicted state  X_pred  P_pred]:::state
+
+  subgraph CORRECTIONS
+    GPS[[GPS  position  velocity]]:::sensor
+    GUPD[GPS correction  Covariance Intersection]:::corr
+
+    LID[[LIDAR  altitude]]:::sensor
+    LUPD[LIDAR correction  Z only]:::corr2
+  end
+
+  OUT[Final estimated state  X_k  P_k]:::state
+
+  A --> PRED --> Xpred
+  Xpred --> GUPD --> LUPD --> OUT
+  GPS -. measurement .-> GUPD
+  LID -. measurement .-> LUPD
+  OUT --> A
+
+  classDef state fill:#E8F0FE,stroke:#1A73E8,stroke-width:2px,color:#0B1B3A;
+  classDef sensor fill:#F1F3F4,stroke:#5F6368,stroke-width:1.5px,color:#202124;
+  classDef pred fill:#E6F4EA,stroke:#1E8E3E,stroke-width:2px,color:#0F2A17;
+  classDef corr fill:#FFF7E6,stroke:#F29900,stroke-width:2px,color:#3A2400;
+  classDef corr2 fill:#FDE7F3,stroke:#D81B60,stroke-width:2px,color:#3A001A;
+  classDef note fill:#FFFFFF,stroke:#9AA0A6,stroke-dasharray:5 5,color:#5F6368;

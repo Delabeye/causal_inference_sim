@@ -13,177 +13,124 @@ class Sensor:
 
 
 class GPSSensor(Sensor):
-    """
-    Capteur GPS simple :
-      - position_noise_std : écart-type du bruit sur la position (m)
-      - velocity_noise_std : écart-type du bruit sur la vitesse (m/s)
-    """
-
+    """Capteur GPS simple."""
     def __init__(self, config: dict):
         super().__init__()
-
         self.pos_noise_std = float(config.get("position_noise_std", 0.0))
         self.vel_noise_std = float(config.get("velocity_noise_std", 0.0))
+        if self.pos_noise_std < 0.0: self.pos_noise_std = 0.0
+        if self.vel_noise_std < 0.0: self.vel_noise_std = 0.0
 
-        if self.pos_noise_std < 0.0:
-            self.pos_noise_std = 0.0
-        if self.vel_noise_std < 0.0:
-            self.vel_noise_std = 0.0
-
-    def measure(
-        self,
-        ground_truth_position: np.ndarray,
-        ground_truth_velocity: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Renvoie (position_mesurée, vitesse_mesurée) avec bruit gaussien.
-        """
+    def measure(self, ground_truth_position: np.ndarray, ground_truth_velocity: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         pos_noise = np.random.normal(0.0, self.pos_noise_std, 3)
         vel_noise = np.random.normal(0.0, self.vel_noise_std, 3)
-
-        meas_pos = ground_truth_position + pos_noise
-        meas_vel = ground_truth_velocity + vel_noise
-
-        return meas_pos, meas_vel
+        return ground_truth_position + pos_noise, ground_truth_velocity + vel_noise
 
 
 class IMUSensor(Sensor):
-    """
-    IMU simplifiée :
-      - accéléromètre : mesure la force spécifique en repère body (a - g)
-      - gyroscope : mesure la vitesse angulaire en repère body
-
-    config :
-      - accel_noise_std : écart-type bruit accel (m/s^2)
-      - gyro_noise_std  : écart-type bruit gyro (rad/s)
-      - gravity         : norme de la gravité (par défaut 9.81)
-    """
-
+    """IMU simplifiée."""
     def __init__(self, config: dict):
         super().__init__()
-
         self.accel_noise_std = float(config.get("accel_noise_std", 0.0))
         self.gyro_noise_std = float(config.get("gyro_noise_std", 0.0))
         self.gravity = float(config.get("gravity", 9.81))
-
         self._prev_vel = np.zeros(3, dtype=float)
         self._initialized = False
 
-    def measure(
-        self,
-        ground_truth_position: np.ndarray,
-        ground_truth_orientation: np.ndarray,
-        ground_truth_velocity: np.ndarray,
-        ground_truth_ang_vel: np.ndarray,
-        dt: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Renvoie (specific_force_body, gyro_body).
-
-        - specific_force_body ≈ R^T (a_world - g_world)
-        - gyro_body ≈ vitesse angulaire fournie par PyBullet (approx)
-        """
-        if dt <= 0.0:
-            dt = 1e-6
-
-        v = np.array(ground_truth_velocity, dtype=float)
-
+    def measure(self, gt_pos, gt_orn, gt_vel, gt_ang_vel, dt: float):
+        if dt <= 0.0: dt = 1e-6
+        v = np.array(gt_vel, dtype=float)
         if not self._initialized:
             a_world = np.zeros(3, dtype=float)
             self._initialized = True
         else:
             a_world = (v - self._prev_vel) / dt
-
         self._prev_vel = v
 
-        # Gravité en repère monde
         g_world = np.array([0.0, 0.0, -self.gravity], dtype=float)
-
-        # Force spécifique en repère monde
         f_world = a_world - g_world
-
-        # Rotation monde -> body via quaternion
-        q = ground_truth_orientation  # [x, y, z, w]
+        q = gt_orn
         rot_mat = np.array(p.getMatrixFromQuaternion(q)).reshape(3, 3)
         f_body = rot_mat.T @ f_world
+        omega_body = np.array(gt_ang_vel, dtype=float)
 
-        # Vitesse angulaire (on la prend telle quelle, approx body)
-        omega_body = np.array(ground_truth_ang_vel, dtype=float)
-
-        # Bruits
-        if self.accel_noise_std > 0.0:
-            f_body = f_body + np.random.normal(0.0, self.accel_noise_std, 3)
-        if self.gyro_noise_std > 0.0:
-            omega_body = omega_body + np.random.normal(0.0, self.gyro_noise_std, 3)
+        if self.accel_noise_std > 0.0: f_body += np.random.normal(0.0, self.accel_noise_std, 3)
+        if self.gyro_noise_std > 0.0: omega_body += np.random.normal(0.0, self.gyro_noise_std, 3)
 
         return f_body, omega_body
 
+
 class LidarSensor(Sensor):
     """
-    Capteur LIDAR qui lit ses paramètres depuis un objet config.    
+    Capteur LIDAR capable de scanner l'environnement ET de mesurer l'altitude.
     """
     def __init__(self, max_distance: float, angle_resolution: float):
-
-        """
-        Initialise le capteur LIDAR.
-        'config' est un dictionnaire, par ex:
-        {'max_distance': 100.0, 'angle_resolution': 1.0}
-        """
         super().__init__()
-        
-        # Lit les paramètres depuis l'objet config
         self.max_distance = max_distance
         self.angle_resolution = angle_resolution
 
-        if self.max_distance <= 0:
-            self.max_distance = 100.0
-        if self.angle_resolution <= 0:
-            self.angle_resolution = 1.0
+        if self.max_distance <= 0: self.max_distance = 100.0
+        if self.angle_resolution <= 0: self.angle_resolution = 1.0
         
     def measure(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float) -> list[np.ndarray]:
-        """
-        Simule un lidar 2D à 360° autour du capteur.
-        sensor_position : np.array([x, y, z])
-        """
+        """Simule un lidar 2D à 360° autour du capteur (Plan XY)."""
         obstacles_positions = []
         num_measurements = int(360 / self.angle_resolution)
-        sensor_position[2] += 0.01
+        
+        # Copie pour ne pas modifier l'original
+        pos = sensor_position.copy()
+        pos[2] += 0.01 
 
         for i in range(num_measurements):
             angle_deg = i * self.angle_resolution
             angle_rad = np.radians(angle_deg)
-
-            # direction dans le plan XY
-            direction = np.array([
-                np.cos(angle_rad),
-                np.sin(angle_rad),
-                0.0
-                ])
+            direction = np.array([np.cos(angle_rad), np.sin(angle_rad), 0.0])
             
-            Rz = np.array([[math.cos(yaw), -math.sin(yaw),0],
-                   [math.sin(yaw),  math.cos(yaw),0],
-                   [0,0,1]])
-            Ry = np.array([[math.cos(pitch),0, math.sin(pitch)],
-                   [0,1,0],
-                   [-math.sin(pitch),0, math.cos(pitch)]])
-            Rx = np.array([[1,0,0],
-                   [0,math.cos(roll), -math.sin(roll)],
-                   [0,math.sin(roll), math.cos(roll)]])
+            # Matrices de rotation
+            Rz = np.array([[math.cos(yaw), -math.sin(yaw),0], [math.sin(yaw), math.cos(yaw),0], [0,0,1]])
+            Ry = np.array([[math.cos(pitch),0, math.sin(pitch)], [0,1,0], [-math.sin(pitch),0, math.cos(pitch)]])
+            Rx = np.array([[1,0,0], [0,math.cos(roll), -math.sin(roll)], [0,math.sin(roll), math.cos(roll)]])
             R = Rz @ Ry @ Rx
-            # point final du rayon
-            ray_end = sensor_position + R @ direction * self.max_distance
-
-            result = p.rayTest(
-                sensor_position.tolist(),
-                ray_end.tolist()
-            )
-
-            # result structure :
-            # (objectUniqueId, linkIndex, hit_fraction, hit_position, hit_normal)
-
-            hit_id = result[0][1]
-
-            if hit_id != -1:
+            
+            ray_end = pos + R @ direction * self.max_distance
+            result = p.rayTest(pos.tolist(), ray_end.tolist())
+            
+            if result[0][1] != -1:
                 obstacles_positions.append(np.array(result[0][3], dtype=float))
     
-        return obstacles_positions  
+        return obstacles_positions
+
+    def measure_altitude(self, sensor_position: np.ndarray, orientation_q: np.ndarray) -> float:
+        """
+        NOUVEAU : Mesure l'altitude Z via un rayon vers le bas (Body Frame).
+        Retourne l'altitude Z projetée ou NaN si hors de portée.
+        """
+        # 1. Vecteur "Bas" dans le repère du drone (Body)
+        vec_down_body = np.array([0, 0, -1])
+        
+        # 2. Rotation vers le repère Monde
+        rot_mat = np.array(p.getMatrixFromQuaternion(orientation_q)).reshape(3, 3)
+        vec_down_world = rot_mat @ vec_down_body
+        
+        # 3. Lancer du rayon
+        start = sensor_position
+        end = sensor_position + vec_down_world * self.max_distance
+        
+        result = p.rayTest(start.tolist(), end.tolist())
+        hit_fraction = result[0][2]
+        
+        if hit_fraction < 1.0:
+            # Distance mesurée (en oblique si le drone est penché)
+            slant_range = hit_fraction * self.max_distance
+            
+            # 4. Correction d'angle pour avoir la hauteur verticale Z
+            # On projette la distance mesurée sur l'axe Z vertical du monde
+            # cos(theta) = produit scalaire entre le rayon et la verticale (0,0,-1)
+            # Comme le rayon est vec_down_world (unitaire), cos_theta = -vec_down_world[2]
+            cos_tilt = -vec_down_world[2]
+            
+            if cos_tilt > 0:
+                z_altitude = slant_range * cos_tilt
+                return z_altitude
+                
+        return float('nan')

@@ -1,130 +1,63 @@
-#===============================================================
-# CONFIGURATION PRINCIPALE DU SIMULATEUR
-#===============================================================
 simulation:
-  # "gui" pour voir la simulation, "direct" pour tourner en arrière-plan
-  connect_mode: "gui"
-
-
-  # Pas de temps de la simulation (1/240. = 240 Hz)
   dt: 0.00416
-
-
-  # Durée maximale de la simulation en secondes
-  max_sim_time: 60.0
-
-
-# Gravité
-physics:
-  gravity: [0.0, 0.0, -9.81]
-
-
-#===============================================================
-# DÉFINITIONS DU MONDE
-#===============================================================
-world:
-  obstacles:
-    - type: "cube"
-      center: [2.0, 0.0, 0.5]
-      length: 1.0
-      width: 1.0
-      height: 1.0
-
-
-    - type: "sphere"
-      center: [-2.0, 1.0, 1.0]
-      radius: 0.5
-
-
-    - type: "cylinder"
-      center: [0.0, 3.0, 1.5]
-      radius: 0.25
-      height: 3.0
-
-
-#===============================================================
-# DÉFINITIONS DES AGENTS (10 DRONES)
-#===============================================================
-swarm:
-  enabled: false       # <- mets false pour désactiver l'essaim
-  leader: "drone_0"   # nom du drone leader (optionnel, par défaut le 1er)
-  min_sep: 0.6        # distance minimale entre drones (m)
-  avoid_gain: 0.5     # intensité de la répulsion (0..1 recommandé)
-
+  gravity: -9.81
+  physics_client: "GUI"
 
 agents:
-  #------------------- DRONE 0 : LEADER ------------------------
+  # LEADER
   - type: "uav"
     name: "drone_0"
     urdf_path: "assets/quadrotor.urdf"
-    start_pos: [0.0, 0.0, 0.2]
-
-    logging:
-      enabled: true
-      dir: "logs"
-      file: "drone_0_log.csv"
-
+    start_pos: [0.0, 0.0, 0.5]
     waypoints:
+      - [0.0, 0.0, 2.0]
+      - [5.0, 0.0, 2.0]
+      - [5.0, 5.0, 2.5]
+      - [0.0, 5.0, 2.0]
       - [0.0, 0.0, 1.0]
-      - [2.0, 1.0, 1.0]
-      - [2.0, -1.0, 1.2]
-      - [0.0, -2.0, 1.0]
-      - [-2.0, -1.0, 1.0]
-      - [-2.0, 1.0, 1.2]
-      - [0.0, 0.0, 1.0]
-
-
-  # Dynamique
-    acc_limit_xy: 5.0
-    yaw_rate_max_deg: 120.0
-    tilt_gain: 0.4
-
+    logging: {enabled: true, dir: "logs", file: "drone_0_log.csv"}
+    
+    acc_limit_xy: 3.0
     sensors:
-      gps:
-        enabled: true
-        # On met du bruit pour voir l'intérêt de l'EKF
-        position_noise_std: 0.3 
-        velocity_noise_std: 0.1
-
-      imu:
-        enabled: true
-        accel_noise_std: 0.2
-        gyro_noise_std: 0.01
-
-      ekf:
-        enabled: true
-        # Paramètres pour le filtre (doivent être cohérents avec les capteurs)
-        r_pos: 0.3
-        accel_noise_std: 0.2
-
-
-      lidar:
-        enabled: false
-
-
+      gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
+      imu: {enabled: true, accel_noise_std: 0.1, gyro_noise_std: 0.01}
+      ekf: {enabled: true, r_pos: 0.5, accel_noise_std: 0.2}
+      lidar: {enabled: true, max_distance: 5.0, angle_resolution: 5.0}
     components:
-      controller_x:
-        type: "pid"
-        gains:
-          Kp: 1.0
-          Ki: 0.0
-          Kd: 2.0
-        windup: 1.0
+      controller_x: {gains: {Kp: 0.8, Ki: 0.0, Kd: 0.1}, windup: 1.0}
+      controller_y: {gains: {Kp: 0.8, Ki: 0.0, Kd: 0.1}, windup: 1.0}
+      controller_z: {gains: {Kp: 2.0, Ki: 0.1, Kd: 1.0}, windup: 1.0}
 
+  # SUIVEUR 1
+  - type: "uav"
+    name: "drone_1"
+    urdf_path: "assets/quadrotor.urdf"
+    start_pos: [-1.0, -1.0, 0.5]
+    logging: {enabled: false}
+    acc_limit_xy: 3.0
+    sensors:
+      gps: {enabled: true}
+      imu: {enabled: true}
+      ekf: {enabled: true}
+      lidar: {enabled: false}
+    components:
+      controller_x: {gains: {Kp: 0.8, Kd: 0.1}}
+      controller_y: {gains: {Kp: 0.8, Kd: 0.1}}
+      controller_z: {gains: {Kp: 2.0, Kd: 1.0}}
 
-      controller_y:
-        type: "pid"
-        gains:
-          Kp: 1.0
-          Ki: 0.0
-          Kd: 2.0
-        windup: 1.0
-
-
-      controller_z:
-        type: "pid"
-        gains:
-          Kp: 3.0
-          Ki: 0.0
-          Kd: 4.0
-        windup: 1.0
+  # SUIVEUR 2
+  - type: "uav"
+    name: "drone_2"
+    urdf_path: "assets/quadrotor.urdf"
+    start_pos: [-1.0, 1.0, 0.5]
+    logging: {enabled: false}
+    acc_limit_xy: 3.0
+    sensors:
+      gps: {enabled: true}
+      imu: {enabled: true}
+      ekf: {enabled: true}
+      lidar: {enabled: false}
+    components:
+      controller_x: {gains: {Kp: 0.8, Kd: 0.1}}
+      controller_y: {gains: {Kp: 0.8, Kd: 0.1}}
+      controller_z: {gains: {Kp: 2.0, Kd: 1.0}}

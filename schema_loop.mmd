@@ -19,12 +19,12 @@ flowchart LR
     uav["UAV"]
     pid["PID"]
     sensors["Sensors"]
-    ekf["GPSEKF"]
+    ekf["GNSSEKF"]
     logger["Logger_CSV"]
   end
 
   subgraph SensorNodes
-    gps["GPSSensor"]
+    gnss["GNSSSensor"]
     imu["IMUSensor"]
     lidar["LidarSensor"]
   end
@@ -51,15 +51,15 @@ flowchart LR
   uav --> logger
 
   %% Sensors inside UAV
-  sensors --> gps
+  sensors --> gnss
   sensors --> imu
   sensors --> lidar
 
   %% Data flow
   pyb -->|ground_truth_state_to_control| uav
 
-  gps -->|gps_measurements| uav
-  gps -->|gps_measurements| ekf
+  gnss -->|gps_measurements| uav
+  gnss -->|gps_measurements| ekf
   imu -->|imu_measurements| uav
   lidar -->|lidar_measurements| uav
 
