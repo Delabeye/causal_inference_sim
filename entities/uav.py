@@ -62,6 +62,12 @@ class UAV(Agent):
         self.replan_timer = 0         # Cooldown pour éviter de spammer
         self.Calculation_fail_count = 0
 
+        # --- SWARM CONTROL (MODIFIÉ) ---
+        self.swarm_active = False
+        self.swarm_target_pos = None
+        self.swarm_target_vel = None
+        self.swarm_target_yaw = None  # Nouveau : pour stocker le Yaw du leader
+
         # --- CAPTEURS ---
         sens = config.get("sensors", {})
         self.ekf = GPSEKF(dt); self.ekf.x[:3] = start_pos
@@ -82,6 +88,16 @@ class UAV(Agent):
         
         # Damping physique nul (on gère le drag nous-même)
         p.changeDynamics(self.bodyId, -1, linearDamping=0, angularDamping=0)
+
+    # ----------------------------------------------------------------------
+    # API SWARM (MODIFIÉE POUR YAW)
+    # ----------------------------------------------------------------------
+    def set_swarm_command(self, target_pos, target_vel, target_yaw=None):
+        """ Appelé par le Swarm pour prendre le contrôle """
+        self.swarm_active = True
+        self.swarm_target_pos = np.array(target_pos)
+        self.swarm_target_vel = np.array(target_vel)
+        self.swarm_target_yaw = target_yaw # On stocke le Yaw reçu
 
     # ----------------------------------------------------------------------
     # GESTION OBSTACLES & PLANNING ASYNCHRONE
@@ -147,10 +163,8 @@ class UAV(Agent):
             path = self.planner.plan(start_pos, target_pos, obstacles, smooth=True)
             if path and len(path) > 0:
                 self.active_path = path 
-                print(f"[{self.name}] ✅ A* Terminé : {len(path)} points.")
                 self.Calculation_fail_count = 0
             else:
-                print(f"[{self.name}] ❌ A* Échec (Pas de chemin).")
                 self.Calculation_fail_count += 1
         except Exception as e:
             print(f"[{self.name}] 💥 Erreur Thread A*: {e}")
@@ -213,15 +227,21 @@ class UAV(Agent):
         target_pos = pos # Par défaut : on reste là
         target_vel = np.zeros(3) # Par défaut : stationnaire
         
-        # Cas 1 : En cours de planification (Thread actif)
+        # PRIORITÉ 1 : SWARM (Si activé)
+        if self.swarm_active and self.swarm_target_pos is not None:
+            target_pos = self.swarm_target_pos
+            if self.swarm_target_vel is not None:
+                target_vel = self.swarm_target_vel
+
+        # PRIORITÉ 2 : En cours de planification (Thread actif)
         # -> DYNAMIQUE STATIONNAIRE (Freinage actif)
-        if self.is_planning:
+        elif self.is_planning:
             # On demande au contrôleur de freiner et maintenir l'altitude
             target_pos = pos 
             target_vel = -0.5 * vel # Freinage amorti
             
         else:
-            # Cas 2 : Normal (Pas de calcul en cours)
+            # PRIORITÉ 3 : Normal (Navigation autonome Waypoints)
             
             # A. Gestion Waypoints Globaux
             while self.wp_idx < len(self.waypoints):
@@ -286,9 +306,13 @@ class UAV(Agent):
         if dist_final > 1.0:
             target_pos = pos + (direction_vec / dist_final) * 1.0
             
-        # Orientation Yaw
-        if np.linalg.norm(direction_vec[:2]) > 0.5:
-            self.target_yaw_cache = np.arctan2(direction_vec[1], direction_vec[0])
+        # Orientation Yaw (MODIFIÉ)
+        if self.swarm_active and self.swarm_target_yaw is not None:
+             # Si le Swarm nous donne un angle imposé (celui du leader), on le prend
+             self.target_yaw_cache = self.swarm_target_yaw
+        elif np.linalg.norm(direction_vec[:2]) > 0.5:
+             # Sinon comportement standard : on regarde vers la cible
+             self.target_yaw_cache = np.arctan2(direction_vec[1], direction_vec[0])
 
         state_vec = np.hstack([pos, orn_q, rpy, vel, ang_vel, self.last_rpms])
         
