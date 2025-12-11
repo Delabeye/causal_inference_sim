@@ -1,149 +1,132 @@
 import numpy as np
-import random
+from pathfinding3d.core.grid import Grid
+from pathfinding3d.finder.a_star import AStarFinder
+from pathfinding3d.core.diagonal_movement import DiagonalMovement
 
-class RRTNode:
-    def __init__(self, pos, parent=None):
-        self.pos = np.array(pos, dtype=float)
-        self.parent = parent
 
-class RRT3DPlanner:
-    def __init__(
-            self,
-            config: dict,
-        ):
-        """
-        bounds: dict { "x": (xmin, xmax), "y": (...), "z": (...) }  OR key "world_bounds"
-        step_size: distance step RRT per extension
-        safe_distance : distance min par rapport à tout obstacle
-        """
-        # accept either "world_bounds" or "bounds"
-        self.bounds = config.get("world_bounds") or config.get("bounds")
-        if not self.bounds:
-            raise ValueError("Config must include 'world_bounds' or 'bounds' as dict with keys 'x','y','z'.")
+class AStarPlanner:
+    def __init__(self, config: dict, physics_client_id=0):
+        self.physics_client_id = physics_client_id 
+        self.bounds = config.get("world_bounds")
+        if not self.bounds: raise ValueError("Config A* doit inclure 'world_bounds'")
 
-        self.step_size = config.get("step_size", 1.0)
-        self.max_iter = config.get("max_iter", 3000)
-        self.safe_distance = config.get("safe_distance", 1.0)
-        # probability to sample the goal directly (helps to find path)
-        self.goal_sample_rate = config.get("goal_sample_rate", 0.05)
+        self.resolution = 0.25
+        # [MODIF] Réduction de la marge pour éviter les blocages excessifs
+        self.safety_margin_cells = 1 
 
-    # -------------------------------------------------------------
-    # Utilitaires
-    # -------------------------------------------------------------
-    def _random_point(self):
-        return np.array([
-            random.uniform(*self.bounds["x"]),
-            random.uniform(*self.bounds["y"]),
-            random.uniform(*self.bounds["z"]),
-        ])
+        self.min_x, self.max_x = self.bounds["x"]
+        self.min_y, self.max_y = self.bounds["y"]
+        self.min_z, self.max_z = self.bounds["z"]
+        
+        self.width = int(np.ceil((self.max_x - self.min_x) / self.resolution))
+        self.height = int(np.ceil((self.max_y - self.min_y) / self.resolution))
+        self.depth = int(np.ceil((self.max_z - self.min_z) / self.resolution))
+        
+        self.finder = AStarFinder(diagonal_movement=DiagonalMovement.always)
 
-    def _clip_to_bounds(self, p):
-        return np.array([
-            np.clip(p[0], *self.bounds["x"]),
-            np.clip(p[1], *self.bounds["y"]),
-            np.clip(p[2], *self.bounds["z"]),
-        ])
+    def _pos_to_node(self, pos):
+        x = int((pos[0] - self.min_x) / self.resolution)
+        y = int((pos[1] - self.min_y) / self.resolution)
+        z = int((pos[2] - self.min_z) / self.resolution)
+        x = max(0, min(x, self.width - 1))
+        y = max(0, min(y, self.height - 1))
+        z = max(0, min(z, self.depth - 1))
+        return x, y, z
 
-    def _distance(self, a, b):
-        a = np.array(a, dtype=float)
-        b = np.array(b, dtype=float)
-        return np.linalg.norm(a - b)
+    def _node_to_pos(self, node):
+        px = (node.x * self.resolution) + self.min_x
+        py = (node.y * self.resolution) + self.min_y
+        pz = (node.z * self.resolution) + self.min_z
+        return np.array([px, py, pz])
 
-    def _nearest_node(self, nodes, point):
-        dists = [self._distance(n.pos, point) for n in nodes]
-        return nodes[int(np.argmin(dists))]
+    def _build_grid_from_cloud(self, point_cloud):
+        matrix = np.ones((self.width, self.height, self.depth), dtype=np.int8)
+        for p in point_cloud:
+            cx, cy, cz = self._pos_to_node(p)
+            x0 = max(0, cx - self.safety_margin_cells)
+            x1 = min(self.width, cx + self.safety_margin_cells + 1)
+            y0 = max(0, cy - self.safety_margin_cells)
+            y1 = min(self.height, cy + self.safety_margin_cells + 1)
+            z0 = max(0, cz - self.safety_margin_cells)
+            z1 = min(self.depth, cz + self.safety_margin_cells + 1)
+            matrix[x0:x1, y0:y1, z0:z1] = 0 
+        return Grid(matrix=matrix)
 
-    def _steer(self, from_node, to_point):
-        from_pos = from_node.pos
-        to_point = np.array(to_point, dtype=float)
-        direction = to_point - from_pos
-        norm = np.linalg.norm(direction)
-        if norm < 1e-6:
-            return from_pos.copy()
-        step = min(self.step_size, norm)
-        new_pos = from_pos + (direction / norm) * step
-        return self._clip_to_bounds(new_pos)
-
-    def _is_collision_free(self, pos, obstacles):
-        """Vérifie juste la distance aux obstacles (obstacles = liste de points)."""
-        for ob in obstacles:
-            if np.linalg.norm(pos - ob) < self.safe_distance:
+    def _is_line_safe_on_grid(self, grid, start_pos, end_pos):
+        dist = np.linalg.norm(end_pos - start_pos)
+        if dist < 0.05: return True
+        steps = int(np.ceil(dist / (self.resolution / 2)))
+        for i in range(steps + 1):
+            t = i / steps
+            pt = start_pos + (end_pos - start_pos) * t
+            nx, ny, nz = self._pos_to_node(pt)
+            if not grid.node(nx, ny, nz).walkable:
                 return False
         return True
 
-    def _is_path_collision_free(self, a, b, obstacles):
-        """Check collisions along segment [a,b] by sampling points."""
-        a = np.array(a, dtype=float)
-        b = np.array(b, dtype=float)
-        dist = self._distance(a, b)
-        if dist < 1e-8:
-            return self._is_collision_free(a, obstacles)
-        # sample at resolution half of safe_distance (or a few points)
-        step = max(self.safe_distance * 0.5, 0.1)
-        num = int(np.ceil(dist / step))
-        for i in range(num + 1):
-            t = i / max(num, 1)
-            p = a + t * (b - a)
-            if not self._is_collision_free(p, obstacles):
+    def check_line_validity(self, start_pos, end_pos, map_points):
+        grid = self._build_grid_from_cloud(map_points)
+        return self._is_line_safe_on_grid(grid, np.array(start_pos), np.array(end_pos))
+
+    def check_path_validity(self, path, map_points):
+        grid = self._build_grid_from_cloud(map_points)
+        for i in range(len(path)-1):
+            if not self._is_line_safe_on_grid(grid, np.array(path[i]), np.array(path[i+1])):
                 return False
         return True
 
-    # -------------------------------------------------------------
-    # Construire chemin final
-    # -------------------------------------------------------------
-    def _reconstruct_path(self, node):
-        path = []
-        cur = node
-        while cur is not None:
-            path.append(cur.pos)
-            cur = cur.parent
-        return path[::-1]
+    def _prune_path(self, path, grid):
+        if len(path) < 3: return path
+        pruned = [path[0]]
+        curr = 0
+        while curr < len(path) - 1:
+            for i in range(len(path) - 1, curr, -1):
+                if self._is_line_safe_on_grid(grid, path[curr], path[i]):
+                    pruned.append(path[i]); curr = i; break
+            else: curr += 1; pruned.append(path[curr])
+        return pruned
 
-    # -------------------------------------------------------------
-    # RRT principal
-    # -------------------------------------------------------------
-    def plan(self, start, goal, obstacles):
-        # normalize inputs
-        start_np = np.array(start, dtype=float)
-        goal_np = np.array(goal, dtype=float)
-        obs_np = [np.array(o, dtype=float) for o in (obstacles or [])]
+    def _resample_path(self, path, spacing=0.4):
+        if len(path) < 2: return path
+        new_path = [path[0]]
+        for i in range(len(path) - 1):
+            p0 = np.array(path[i]); p1 = np.array(path[i+1])
+            dist = np.linalg.norm(p1 - p0)
+            if dist > spacing:
+                num = int(np.ceil(dist / spacing))
+                for j in range(1, num + 1): new_path.append(p0 + (p1 - p0) * (j / num))
+            else: new_path.append(p1)
+        return new_path
 
-        # quick checks
-        if not self._is_collision_free(start_np, obs_np):
-            return None
-        if not self._is_collision_free(goal_np, obs_np):
-            return None
+    def plan(self, start, goal, map_points=[], smooth=True):
+        start = np.array(start); goal = np.array(goal)
+        grid = self._build_grid_from_cloud(map_points)
+        
+        # Check direct
+        if self._is_line_safe_on_grid(grid, start, goal):
+            return self._resample_path([start, goal], spacing=0.4)
 
-        start_node = RRTNode(start_np)
-        nodes = [start_node]
+        sx, sy, sz = self._pos_to_node(start)
+        gx, gy, gz = self._pos_to_node(goal)
+        start_node = grid.node(sx, sy, sz)
+        end_node = grid.node(gx, gy, gz)
+        
+        if not start_node.walkable:
+            for n in grid.neighbors(start_node):
+                if n.walkable: start_node = n; break
+            else: return None
+        if not end_node.walkable: return None
 
-        for _ in range(self.max_iter):
+        path_nodes, _ = self.finder.find_path(start_node, end_node, grid)
+        if not path_nodes: return None
+            
+        path = [self._node_to_pos(n) for n in path_nodes]
+        if np.linalg.norm(path[0] - start) > 0.1: path.insert(0, start)
+        if np.linalg.norm(path[-1] - goal) > 0.1: path.append(goal)
 
-            # Sample random point (with small goal bias)
-            if random.random() < self.goal_sample_rate:
-                rnd = goal_np
-            else:
-                rnd = self._random_point()
-
-            # Get nearest RRT node
-            nearest = self._nearest_node(nodes, rnd)
-
-            # Move toward rnd
-            new_pos = self._steer(nearest, rnd)
-
-            # Check obstacle clearance along the segment from nearest to new_pos
-            if not self._is_path_collision_free(nearest.pos, new_pos, obs_np):
-                continue
-
-            # Add new node
-            new_node = RRTNode(new_pos, parent=nearest)
-            nodes.append(new_node)
-
-            # Check if goal reached (and path from new_node to goal is collision-free)
-            if self._distance(new_node.pos, goal_np) <= self.step_size:
-                if self._is_path_collision_free(new_node.pos, goal_np, obs_np):
-                    goal_node = RRTNode(goal_np, parent=new_node)
-                    return self._reconstruct_path(goal_node)
-
-        return None  # Échec
-
+        if smooth:
+            pruned = self._prune_path(path, grid)
+            print (pruned)
+            return self._resample_path(pruned, spacing=0.4)
+        print (path)
+        return self._resample_path(path)

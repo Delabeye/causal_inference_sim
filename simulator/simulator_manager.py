@@ -8,8 +8,7 @@ from environment.world import World
 from entities.uav import UAV
 from entities.obstacles import CubeObstacle, SphericalObstacle, CylindricalObstacle
 from swarm.swarm import Swarm
-from Control.Path_planning import RRT3DPlanner
-
+from entities.static_sensor import RadarStation
 
 class SimulationManager:
     """
@@ -53,12 +52,15 @@ class SimulationManager:
                 physicsClientId=self.physics_client_id,
             )
 
-        # Liste de tous les UAV
-        self.agents: list[UAV] = []
+        # Liste de tous les agents (UAV + radars)
+        self.agents: list[UAV | RadarStation] = []
 
         # Liste des essaims (on n'en crée qu'un, mais on garde une liste)
         self.swarms: list[Swarm] = []
-
+        
+        # Liste des radars
+        self.radars: list[RadarStation] = []
+        
         # 3. Charger scénario (obstacles + drones + objectifs éventuels)
         self.load_scenario()
 
@@ -68,10 +70,10 @@ class SimulationManager:
     # ------------------------------------------------------------------
     def load_scenario(self):
         print("Chargement du scénario...")
-
+        known_obstacles_agent = []
+        self.known_obstacles_config = self.config.get("world", {}).get("obstacles", [])
         # Obstacles
-        world_cfg = self.config.get("world", {})
-        for obs_cfg in world_cfg.get("obstacles", []):
+        for obs_cfg in self.known_obstacles_config:
             otype = obs_cfg.get("type")
             if otype == "cube":
                 obstacle = CubeObstacle(
@@ -79,6 +81,7 @@ class SimulationManager:
                     length=obs_cfg["length"],
                     width=obs_cfg["width"],
                     height=obs_cfg["height"],
+                    obstacle_id=obs_cfg["id"]
                 )
                 self.world.add_cube_obstacle(obstacle)
 
@@ -86,6 +89,7 @@ class SimulationManager:
                 obstacle = SphericalObstacle(
                     center=obs_cfg["center"],
                     radius=obs_cfg["radius"],
+                    obstacle_id=obs_cfg["id"]
                 )
                 self.world.add_sphere_obstacle(obstacle)
 
@@ -94,9 +98,12 @@ class SimulationManager:
                     center=obs_cfg["center"],
                     radius=obs_cfg["radius"],
                     height=obs_cfg["height"],
+                    obstacle_id=obs_cfg["id"]
                 )
                 self.world.add_cylindrical_obstacle(obstacle)
-
+        for obs in self.known_obstacles_config :
+            if obs.get("knowledge", False) == True :
+                known_obstacles_agent.append(obs)
         # Drones
         for agent_cfg in self.config.get("agents", []):
             if agent_cfg.get("type") == "uav":
@@ -104,8 +111,14 @@ class SimulationManager:
                     config=agent_cfg,
                     physics_client_id=self.physics_client_id,
                     dt=self.dt,
+                    known_obstacles_config=known_obstacles_agent,
                 )
                 self.agents.append(uav)
+
+            elif agent_cfg.get("type") == "radar":
+                radar = RadarStation(config=agent_cfg, physics_client_id=self.physics_client_id, dt=self.dt)
+                self.agents.append(radar) # On l'ajoute à la boucle principale pour le think_and_act
+                self.radars.append(radar)
 
         # Objectifs (ancienne mécanique, on la garde pour compatibilité)
         for objective in self.config.get("objectives", []):

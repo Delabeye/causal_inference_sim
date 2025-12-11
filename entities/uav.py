@@ -1,12 +1,20 @@
 import os
 import csv
+import threading
 import pybullet as p
 import numpy as np
 
+# Imports Utilitaires & Contrôle
+from utilities.utilities import point_in_cube, point_in_cylinder
 from entities.agent import Agent
-from Control.PID import PIDController
 from entities.sensor import GPSSensor, IMUSensor, LidarSensor
 from Control.EKF import GPSEKF
+from Control.Path_planning import AStarPlanner
+from Control.PID import PIDController
+
+
+from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
+from gym_pybullet_drones.utils.enums import DroneModel
 
 
 class UAV(Agent):
@@ -343,5 +351,6 @@ class UAV(Agent):
 
         self._log_state(pos, vel)
         self._sim_time += self.dt
+        self._log(pos)
 
     def apply_physics(self, *args, **kwargs): pass

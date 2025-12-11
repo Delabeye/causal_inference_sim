@@ -1,164 +1,125 @@
 <?xml version="1.0" ?>
-<robot name="simple_quadrotor">
+<robot name="cf2">
 
-  <!-- Corps central du drone -->
+  <properties arm="0.0397" kf="3.16e-10" km="7.94e-12" thrust2weight="2.25" max_speed_kmh="30" gnd_eff_coeff="11.36859" prop_radius="2.31348e-2" drag_coeff_xy="9.1785e-7" drag_coeff_z="10.311e-7" dw_coeff_1="2267.18" dw_coeff_2=".16" dw_coeff_3="-.11" />
+
   <link name="base_link">
     <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <!-- masse totale ~30 g -->
-      <mass value="0.03"/>
-      <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="2e-5"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.027"/>
+      <inertia ixx="1.4e-5" ixy="0.0" ixz="0.0" iyy="1.4e-5" iyz="0.0" izz="2.17e-5"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <!-- petit pavé comme corps -->
-        <box size="0.1 0.1 0.02"/>
-      </geometry>
-      <material name="body_color">
-        <color rgba="0.2 0.2 0.8 1.0"/>
-      </material>
+        <box size="0.06 0.06 0.02"/>
+      </geometry> 
+      <material name="grey">
+        <color rgba=".5 .5 .5 1"/>
+      </material> 
     </visual>
-
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <box size="0.1 0.1 0.02"/>
+        <cylinder radius=".06" length=".025"/>
       </geometry>
     </collision>
   </link>
 
-  <!-- ================= ROTOR 0 ================= -->
-  <link name="rotor_0">
+  <link name="prop0_link">
     <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+      <origin rpy="0 0 0" xyz="0.028 -0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin rpy="0 0 0" xyz="0.028 -0.028 0.01"/>
       <geometry>
-        <cylinder radius="0.03" length="0.005"/>
+        <cylinder radius="0.023" length="0.002"/>
       </geometry>
-      <material name="rotor_color_0">
-        <color rgba="0.8 0.2 0.2 1.0"/>
+      <material name="red">
+        <color rgba="1 0 0 1"/>
       </material>
     </visual>
-
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <cylinder radius="0.03" length="0.005"/>
-      </geometry>
-    </collision>
   </link>
-
-  <joint name="joint_rotor_0" type="fixed">
+  <joint name="prop0_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="rotor_0"/>
-    <!-- rotor vers +X -->
-    <origin xyz="0.1 0 0" rpy="0 0 0"/>
+    <child link="prop0_link"/>
   </joint>
 
-  <!-- ================= ROTOR 1 ================= -->
-  <link name="rotor_1">
+  <link name="prop1_link">
     <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+      <origin rpy="0 0 0" xyz="-0.028 -0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin rpy="0 0 0" xyz="-0.028 -0.028 0.01"/>
       <geometry>
-        <cylinder radius="0.03" length="0.005"/>
+        <cylinder radius="0.023" length="0.002"/>
       </geometry>
-      <material name="rotor_color_1">
-        <color rgba="0.2 0.8 0.2 1.0"/>
+      <material name="black">
+        <color rgba="0 0 0 1"/>
       </material>
     </visual>
-
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <cylinder radius="0.03" length="0.005"/>
-      </geometry>
-    </collision>
   </link>
-
-  <joint name="joint_rotor_1" type="fixed">
+  <joint name="prop1_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="rotor_1"/>
-    <!-- rotor vers -X -->
-    <origin xyz="-0.1 0 0" rpy="0 0 0"/>
+    <child link="prop1_link"/>
   </joint>
 
-  <!-- ================= ROTOR 2 ================= -->
-  <link name="rotor_2">
+  <link name="prop2_link">
     <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+      <origin rpy="0 0 0" xyz="-0.028 0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin rpy="0 0 0" xyz="-0.028 0.028 0.01"/>
       <geometry>
-        <cylinder radius="0.03" length="0.005"/>
+        <cylinder radius="0.023" length="0.002"/>
       </geometry>
-      <material name="rotor_color_2">
-        <color rgba="0.2 0.2 0.8 1.0"/>
+      <material name="black">
+        <color rgba="0 0 0 1"/>
       </material>
     </visual>
-
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <cylinder radius="0.03" length="0.005"/>
-      </geometry>
-    </collision>
   </link>
-
-  <joint name="joint_rotor_2" type="fixed">
+  <joint name="prop2_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="rotor_2"/>
-    <!-- rotor vers +Y -->
-    <origin xyz="0 0.1 0" rpy="0 0 0"/>
+    <child link="prop2_link"/>
   </joint>
 
-  <!-- ================= ROTOR 3 ================= -->
-  <link name="rotor_3">
+  <link name="prop3_link">
     <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.001"/>
-      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+      <origin rpy="0 0 0" xyz="0.028 0.028 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
-
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin rpy="0 0 0" xyz="0.028 0.028 0.01"/>
       <geometry>
-        <cylinder radius="0.03" length="0.005"/>
+        <cylinder radius="0.023" length="0.002"/>
       </geometry>
-      <material name="rotor_color_3">
-        <color rgba="0.8 0.8 0.2 1.0"/>
+      <material name="red">
+        <color rgba="1 0 0 1"/>
       </material>
     </visual>
-
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <cylinder radius="0.03" length="0.005"/>
-      </geometry>
-    </collision>
   </link>
-
-  <joint name="joint_rotor_3" type="fixed">
+  <joint name="prop3_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="rotor_3"/>
-    <!-- rotor vers -Y -->
-    <origin xyz="0 -0.1 0" rpy="0 0 0"/>
+    <child link="prop3_link"/>
+  </joint>
+
+  <link name="center_of_mass_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+  </link>
+  <joint name="center_of_mass_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="center_of_mass_link"/>
   </joint>
 
 </robot>
