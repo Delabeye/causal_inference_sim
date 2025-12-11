@@ -13,124 +13,197 @@ class Sensor:
 
 
 class GPSSensor(Sensor):
-    """Capteur GPS simple."""
+    """
+    Capteur GPS simple :
+    - position_noise_std : écart-type du bruit sur la position (m)
+    - velocity_noise_std : écart-type du bruit sur la vitesse (m/s)
+    """
+
     def __init__(self, config: dict):
         super().__init__()
+
         self.pos_noise_std = float(config.get("position_noise_std", 0.0))
         self.vel_noise_std = float(config.get("velocity_noise_std", 0.0))
-        if self.pos_noise_std < 0.0: self.pos_noise_std = 0.0
-        if self.vel_noise_std < 0.0: self.vel_noise_std = 0.0
 
-    def measure(self, ground_truth_position: np.ndarray, ground_truth_velocity: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if self.pos_noise_std < 0.0:
+            self.pos_noise_std = 0.0
+        if self.vel_noise_std < 0.0:
+            self.vel_noise_std = 0.0
+
+    def measure(
+        self,
+        ground_truth_position: np.ndarray,
+        ground_truth_velocity: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Renvoie (position_mesurée, vitesse_mesurée) avec bruit gaussien.
+        """
         pos_noise = np.random.normal(0.0, self.pos_noise_std, 3)
         vel_noise = np.random.normal(0.0, self.vel_noise_std, 3)
-        return ground_truth_position + pos_noise, ground_truth_velocity + vel_noise
+
+        meas_pos = ground_truth_position + pos_noise
+        meas_vel = ground_truth_velocity + vel_noise
+
+        return meas_pos, meas_vel
 
 
 class IMUSensor(Sensor):
-    """IMU simplifiée."""
+    """
+    IMU simplifiée :
+      - accéléromètre : mesure la force spécifique en repère body (a - g)
+      - gyroscope : mesure la vitesse angulaire en repère body
+
+    config :
+      - accel_noise_std : écart-type bruit accel (m/s^2)
+      - gyro_noise_std  : écart-type bruit gyro (rad/s)
+      - gravity         : norme de la gravité (par défaut 9.81)
+    """
+
     def __init__(self, config: dict):
         super().__init__()
+
         self.accel_noise_std = float(config.get("accel_noise_std", 0.0))
         self.gyro_noise_std = float(config.get("gyro_noise_std", 0.0))
         self.gravity = float(config.get("gravity", 9.81))
+
         self._prev_vel = np.zeros(3, dtype=float)
         self._initialized = False
 
-    def measure(self, gt_pos, gt_orn, gt_vel, gt_ang_vel, dt: float):
-        if dt <= 0.0: dt = 1e-6
-        v = np.array(gt_vel, dtype=float)
+    def measure(
+        self,
+        ground_truth_position: np.ndarray,
+        ground_truth_orientation: np.ndarray,
+        ground_truth_velocity: np.ndarray,
+        ground_truth_ang_vel: np.ndarray,
+        dt: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Renvoie (specific_force_body, gyro_body).
+
+        - specific_force_body ≈ R^T (a_world - g_world)
+        - gyro_body ≈ vitesse angulaire fournie par PyBullet (approx)
+        """
+        if dt <= 0.0:
+            dt = 1e-6
+
+        v = np.array(ground_truth_velocity, dtype=float)
+
         if not self._initialized:
             a_world = np.zeros(3, dtype=float)
             self._initialized = True
         else:
             a_world = (v - self._prev_vel) / dt
+
         self._prev_vel = v
 
+        # Gravité en repère monde
         g_world = np.array([0.0, 0.0, -self.gravity], dtype=float)
+
+        # Force spécifique en repère monde
         f_world = a_world - g_world
-        q = gt_orn
+
+        # Rotation monde -> body via quaternion
+        q = ground_truth_orientation  # [x, y, z, w]
         rot_mat = np.array(p.getMatrixFromQuaternion(q)).reshape(3, 3)
         f_body = rot_mat.T @ f_world
-        omega_body = np.array(gt_ang_vel, dtype=float)
 
-        if self.accel_noise_std > 0.0: f_body += np.random.normal(0.0, self.accel_noise_std, 3)
-        if self.gyro_noise_std > 0.0: omega_body += np.random.normal(0.0, self.gyro_noise_std, 3)
+        # Vitesse angulaire (on la prend telle quelle, approx body)
+        omega_body = np.array(ground_truth_ang_vel, dtype=float)
+
+        # Bruits
+        if self.accel_noise_std > 0.0:
+            f_body = f_body + np.random.normal(0.0, self.accel_noise_std, 3)
+        if self.gyro_noise_std > 0.0:
+            omega_body = omega_body + np.random.normal(0.0, self.gyro_noise_std, 3)
 
         return f_body, omega_body
 
-
-class LidarSensor(Sensor):
-    """
-    Capteur LIDAR capable de scanner l'environnement ET de mesurer l'altitude.
-    """
-    def __init__(self, max_distance: float, angle_resolution: float):
-        super().__init__()
-        self.max_distance = max_distance
-        self.angle_resolution = angle_resolution
-
-        if self.max_distance <= 0: self.max_distance = 100.0
-        if self.angle_resolution <= 0: self.angle_resolution = 1.0
-        
-    def measure(self, sensor_position: np.ndarray, roll: float, yaw: float, pitch: float) -> list[np.ndarray]:
-        """Simule un lidar 2D à 360° autour du capteur (Plan XY)."""
-        obstacles_positions = []
-        num_measurements = int(360 / self.angle_resolution)
-        
-        # Copie pour ne pas modifier l'original
-        pos = sensor_position.copy()
-        pos[2] += 0.01 
-
-        for i in range(num_measurements):
-            angle_deg = i * self.angle_resolution
-            angle_rad = np.radians(angle_deg)
-            direction = np.array([np.cos(angle_rad), np.sin(angle_rad), 0.0])
-            
-            # Matrices de rotation
-            Rz = np.array([[math.cos(yaw), -math.sin(yaw),0], [math.sin(yaw), math.cos(yaw),0], [0,0,1]])
-            Ry = np.array([[math.cos(pitch),0, math.sin(pitch)], [0,1,0], [-math.sin(pitch),0, math.cos(pitch)]])
-            Rx = np.array([[1,0,0], [0,math.cos(roll), -math.sin(roll)], [0,math.sin(roll), math.cos(roll)]])
-            R = Rz @ Ry @ Rx
-            
-            ray_end = pos + R @ direction * self.max_distance
-            result = p.rayTest(pos.tolist(), ray_end.tolist())
-            
-            if result[0][1] != -1:
-                obstacles_positions.append(np.array(result[0][3], dtype=float))
-    
-        return obstacles_positions
-
-    def measure_altitude(self, sensor_position: np.ndarray, orientation_q: np.ndarray) -> float:
+class LidarSensor:
+    def __init__(self, config: dict):
         """
-        NOUVEAU : Mesure l'altitude Z via un rayon vers le bas (Body Frame).
-        Retourne l'altitude Z projetée ou NaN si hors de portée.
+        Lidar paramétrable avec un champ de vision (FOV) conique.
         """
-        # 1. Vecteur "Bas" dans le repère du drone (Body)
-        vec_down_body = np.array([0, 0, -1])
+        self.max_distance = float(config.get("max_distance", 5.0))
+        self.angle_resolution = float(config.get("angle_resolution", 2.0))
         
-        # 2. Rotation vers le repère Monde
-        rot_mat = np.array(p.getMatrixFromQuaternion(orientation_q)).reshape(3, 3)
-        vec_down_world = rot_mat @ vec_down_body
+        # FOV en degrés, convertis en demi-angles
+        fov_h = float(config.get("fov_horizontal", 90.0))
+        fov_v = float(config.get("fov_vertical", 30.0))
         
-        # 3. Lancer du rayon
-        start = sensor_position
-        end = sensor_position + vec_down_world * self.max_distance
+        self.half_fov_h = fov_h / 2.0
+        self.half_fov_v = fov_v / 2.0
         
-        result = p.rayTest(start.tolist(), end.tolist())
-        hit_fraction = result[0][2]
-        
-        if hit_fraction < 1.0:
-            # Distance mesurée (en oblique si le drone est penché)
-            slant_range = hit_fraction * self.max_distance
-            
-            # 4. Correction d'angle pour avoir la hauteur verticale Z
-            # On projette la distance mesurée sur l'axe Z vertical du monde
-            # cos(theta) = produit scalaire entre le rayon et la verticale (0,0,-1)
-            # Comme le rayon est vec_down_world (unitaire), cos_theta = -vec_down_world[2]
-            cos_tilt = -vec_down_world[2]
-            
-            if cos_tilt > 0:
-                z_altitude = slant_range * cos_tilt
-                return z_altitude
+        # Pré-génération des vecteurs de rayons dans le repère LOCAL du drone
+        # Axe X = Devant, Y = Gauche, Z = Haut
+        self.local_rays = self._generate_local_rays()
+        print(f"[LidarSensor] Initialisé : {len(self.local_rays)} rayons (FOV H:{fov_h}°, V:{fov_v}°)")
+
+    def _generate_local_rays(self):
+        rays = []
+        # On balaie de gauche à droite (-fov_h/2 à +fov_h/2)
+        for az in np.arange(-self.half_fov_h, self.half_fov_h, self.angle_resolution):
+            # On balaie de bas en haut (-fov_v/2 à +fov_v/2)
+            for el in np.arange(-self.half_fov_v, self.half_fov_v, self.angle_resolution):
                 
-        return float('nan')
+                # Conversion degrés -> radians
+                az_rad = np.deg2rad(az)
+                el_rad = np.deg2rad(el)
+                
+                # Coordonnées sphériques vers Cartésiennes (X est devant)
+                # x = cos(el) * cos(az)
+                # y = cos(el) * sin(az)
+                # z = sin(el)
+                x = np.cos(el_rad) * np.cos(az_rad)
+                y = np.cos(el_rad) * np.sin(az_rad)
+                z = np.sin(el_rad)
+                
+                # Normalisation (juste par sécurité)
+                v = np.array([x, y, z])
+                v = v / np.linalg.norm(v)
+                rays.append(v)
+        
+        return np.array(rays)
+
+    def measure(self, position, roll, yaw, pitch):
+        """
+        Effectue un raycast par lot (batch) dans PyBullet.
+        Args:
+            position: [x, y, z] du drone
+            roll, yaw, pitch: orientation actuelle en radians
+        Returns:
+            points: Liste de np.array [x, y, z] des impacts détectés
+        """
+        # 1. Calcul de la matrice de rotation du drone
+        # PyBullet utilise l'ordre [roll, pitch, yaw] pour les quaternions Euler
+        orn_q = p.getQuaternionFromEuler([roll, pitch, yaw])
+        rot_matrix = p.getMatrixFromQuaternion(orn_q)
+        
+        # Transformation de la matrice plate (9,) en (3,3)
+        R = np.array(rot_matrix).reshape(3, 3)
+        
+        # 2. Rotation de tous les rayons locaux vers le monde
+        # Formule: Ray_Monde = R * Ray_Local
+        # Optimisation vectorielle : (N,3) dot (3,3) -> (N,3)
+        # Note: on utilise transpose pour aligner les dimensions correctement
+        world_rays_dir = self.local_rays @ R.T 
+        
+        # 3. Préparation des positions de départ et d'arrivée
+        num_rays = len(world_rays_dir)
+        ray_froms = np.tile(position, (num_rays, 1))
+        ray_tos = ray_froms + world_rays_dir * self.max_distance
+        
+        # 4. Raycast PyBullet (Batch = très rapide)
+        results = p.rayTestBatch(ray_froms, ray_tos)
+        
+        # 5. Filtrage des impacts
+        detected_points = []
+        for _, res in enumerate(results):
+            # res structure: (objectUniqueId, linkIndex, hitFraction, hitPosition, hitNormal)
+            hit_id = res[0]
+            if hit_id >= 0: # Si on a touché un objet (id >= 0)
+                hit_pos = np.array(res[3])
+                if hit_pos[2]>0.01:  # Filtre pour éviter les points trop proches
+                    hit_id = [round(coord, 3) for coord in hit_pos]
+                    detected_points.append(hit_pos)
+                
+        return detected_points
