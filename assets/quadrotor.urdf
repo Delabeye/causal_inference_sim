@@ -12,7 +12,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <box size="0.06 0.06 0.02"/>
+        <box size="0.1 0.1 0.05"/>
       </geometry> 
       <material name="grey">
         <color rgba=".5 .5 .5 1"/>
@@ -21,7 +21,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <cylinder radius=".06" length=".025"/>
+        <box size="0.15 0.15 0.06"/>
       </geometry>
     </collision>
   </link>
@@ -33,9 +33,9 @@
       <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0.028 -0.028 0.01"/>
+      <origin rpy="0 0 0" xyz="0.075 -0.075 0.03"/>
       <geometry>
-        <cylinder radius="0.023" length="0.002"/>
+        <cylinder radius="0.05" length="0.002"/>
       </geometry>
       <material name="red">
         <color rgba="1 0 0 1"/>
@@ -54,9 +54,9 @@
       <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="-0.028 -0.028 0.01"/>
+      <origin rpy="0 0 0" xyz="-0.075 -0.075 0.03"/>
       <geometry>
-        <cylinder radius="0.023" length="0.002"/>
+        <cylinder radius="0.05" length="0.002"/>
       </geometry>
       <material name="black">
         <color rgba="0 0 0 1"/>
@@ -75,9 +75,9 @@
       <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="-0.028 0.028 0.01"/>
+      <origin rpy="0 0 0" xyz="-0.075 0.075 0.03"/>
       <geometry>
-        <cylinder radius="0.023" length="0.002"/>
+        <cylinder radius="0.05" length="0.002"/>
       </geometry>
       <material name="black">
         <color rgba="0 0 0 1"/>
@@ -96,9 +96,9 @@
       <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
     </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0.028 0.028 0.01"/>
+      <origin rpy="0 0 0" xyz="0.075 0.075 0.03"/>
       <geometry>
-        <cylinder radius="0.023" length="0.002"/>
+        <cylinder radius="0.05" length="0.002"/>
       </geometry>
       <material name="red">
         <color rgba="1 0 0 1"/>
