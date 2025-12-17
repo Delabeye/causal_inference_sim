@@ -243,3 +243,5 @@ class SimulationManager:
         if p.isConnected(self.physics_client_id):
             print("Déconnexion de PyBullet.")
             p.disconnect(self.physics_client_id)
+            for swarm in self.swarms:
+                swarm.cleanup()
