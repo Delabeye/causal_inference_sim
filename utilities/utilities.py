@@ -1,16 +1,5 @@
 import numpy as np
 
-def euclidean_distance_3d(p1, p2):
-    """
-    Calculate the 3-D Euclidean distance between two nodes
-    :param p1: the first point (array-like with 3 elements)
-    :param p2: the second point (array-like with 3 elements)
-    :return: Euclidean distance between p1 and p2 (float)
-    """
-
-    dist = ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2 + (p1[2] - p2[2]) ** 2) ** 0.5
-    return dist
-
 def point_in_cube(point, cube):
     """
     Check if a point is inside a cube defined by its center and size.
@@ -45,3 +34,39 @@ def point_in_cylinder(point, cylinder):
     if horizontal_dist <= radius and vertical_dist <= (height / 2.0):
         return True
     return False
+
+def discretize_obstacles(obstacles):
+        points = []
+        res = 0.25
+        for obs in obstacles:
+            center = np.array(obs["center"])
+            otype = obs["type"]
+            # Discrétisation simplifiée
+            if otype == "cube":
+                l, w, h = obs["length"], obs["width"], obs["height"]
+                xs = np.arange(center[0]-l/2, center[0]+l/2+res, res)
+                ys = np.arange(center[1]-w/2, center[1]+w/2+res, res)
+                zs = np.arange(center[2]-h/2, center[2]+h/2+res, res)
+                for x in xs:
+                    for y in ys:
+                        for z in zs: points.append([round(x, 2), round(y, 2), round(z, 2)])
+            elif otype == "sphere":
+                r = obs["radius"]
+                # Approximation cubique pour aller vite au démarrage
+                xs = np.arange(center[0]-r, center[0]+r+res, res)
+                ys = np.arange(center[1]-r, center[1]+r+res, res)
+                zs = np.arange(center[2]-r, center[2]+r+res, res)
+                for x in xs:
+                    for y in ys:
+                        for z in zs:
+                            if np.linalg.norm(np.array([x,y,z])-center) <= r: points.append([round(x, 2), round(y, 2), round(z, 2)])
+            elif otype == "cylinder":
+                r, h = obs["radius"], obs["height"]
+                xs = np.arange(center[0]-r, center[0]+r+res, res)
+                ys = np.arange(center[1]-r, center[1]+r+res, res)
+                zs = np.arange(center[2]-h/2, center[2]+h/2+res, res)
+                for x in xs:
+                    for y in ys:
+                        if np.linalg.norm(np.array([x,y])-center[:2]) <= r:
+                            for z in zs: points.append([round(x, 2), round(y, 2), round(z, 2)])
+        return points

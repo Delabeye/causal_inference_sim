@@ -5,12 +5,34 @@ from pathfinding3d.core.diagonal_movement import DiagonalMovement
 
 
 class AStarPlanner:
+    """A* Pathfinding Planner for 3D environments with obstacle avoidance.
+    This class implements an A* pathfinding algorithm in 3D space using a voxel grid
+    representation. It converts point clouds into occupancy grids and finds optimal
+    paths while maintaining a safety margin around obstacles.
+    Attributes:
+        physics_client_id (int): Physics simulation client ID for PyBullet integration.
+        bounds (dict): World boundaries with 'x', 'y', 'z' keys containing (min, max) tuples.
+        resolution (float): Grid cell resolution in world units (default: 0.25).
+        safety_margin_cells (int): Number of cells to mark as unsafe around obstacles.
+        width (int): Number of cells along x-axis.
+        height (int): Number of cells along y-axis.
+        depth (int): Number of cells along z-axis.
+        finder (AStarFinder): A* pathfinding algorithm instance with diagonal movement enabled.
+    Methods:
+        plan(start, goal, map_points, smooth):
+            Computes a smooth, collision-free path from start to goal position.
+        check_line_validity(start_pos, end_pos, map_points):
+            Validates whether a direct line segment between two points is collision-free.
+        check_path_validity(path, map_points):
+            Validates whether an entire path is collision-free.
+    """
+
     def __init__(self, config: dict, physics_client_id=0):
         self.physics_client_id = physics_client_id 
         self.bounds = config.get("world_bounds")
         if not self.bounds: raise ValueError("Config A* doit inclure 'world_bounds'")
 
-        self.resolution = 0.25
+        self.resolution = config.get("resolution", 0.25)
         # [MODIF] Réduction de la marge pour éviter les blocages excessifs
         self.safety_margin_cells = 1 
 
