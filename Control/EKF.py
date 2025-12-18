@@ -1,115 +1,90 @@
 import numpy as np
 
-
 class GPSEKF:
-    """
-    EKF simple pour estimer position + vitesse à partir du GPS.
+    def __init__(self, dt):
+        self.dt = dt
+        # État : [x, y, z, vx, vy, vz]
+        self.x = np.zeros(6)
+        
+        # Matrice de Transition (Partie cinématique simple x = x + v*dt)
+        self.F = np.eye(6)
+        self.F[0, 3] = dt
+        self.F[1, 4] = dt
+        self.F[2, 5] = dt
+        
+        # Incertitude initiale
+        self.P = np.eye(6) * 1.0
+        
+        # Bruit du processus (Q)
+        # On réduit le bruit sur la vitesse car l'IMU va nous donner l'info précise
+        self.Q = np.eye(6)
+        self.Q[0:3, 0:3] *= 0.01 
+        self.Q[3:6, 3:6] *= 0.05 
 
-    État : x = [px, py, pz, vx, vy, vz]^T
-    Modèle : position = position + dt * vitesse (vitesse constante)
-    Mesure : z = [px, py, pz, vx, vy, vz]^T (GPS bruité)
-    """
+        # Matrices de Mesure GPS (Position + Vitesse)
+        self.H = np.eye(6)
+        self.R = np.eye(6)
+        self.R[0:3, 0:3] *= 2.0   # Confiance GPS Position (Faible)
+        self.R[3:6, 3:6] *= 0.5   # Confiance GPS Vitesse (Moyenne)
 
-    def __init__(self, dt: float,
-                 q_pos: float = 0.05,
-                 q_vel: float = 0.10,
-                 r_pos: float = 0.1,
-                 r_vel: float = 0.05) -> None:
-        self.dt = float(dt)
+        self.GRAVITY = np.array([0, 0, 9.81])
 
-        # État et covariance
-        self.x = np.zeros(6, dtype=float)   # [px, py, pz, vx, vy, vz]
-        self.P = np.eye(6, dtype=float) * 1e-3
+    def _quat_to_rot_matrix(self, q):
+        """Convertit un quaternion [x, y, z, w] en matrice de rotation 3x3"""
+        x, y, z, w = q
+        # Formule standard
+        R = np.array([
+            [1 - 2*(y**2 + z**2), 2*(x*y - z*w),     2*(x*z + y*w)],
+            [2*(x*y + z*w),     1 - 2*(x**2 + z**2), 2*(y*z - x*w)],
+            [2*(x*z - y*w),     2*(y*z + x*w),     1 - 2*(x**2 + y**2)]
+        ])
+        return R
 
-        # Bruits processus (Q) et mesure (R)
-        q_pos = float(q_pos)
-        q_vel = float(q_vel)
-        r_pos = float(r_pos)
-        r_vel = float(r_vel)
-
-        self.Q = np.diag(
-            [q_pos ** 2, q_pos ** 2, q_pos ** 2,
-             q_vel ** 2, q_vel ** 2, q_vel ** 2]
-        )
-        self.R = np.diag(
-            [r_pos ** 2, r_pos ** 2, r_pos ** 2,
-             r_vel ** 2, r_vel ** 2, r_vel ** 2]
-        )
-
-        # Matrice de transition F (modèle : vitesse constante)
-        dt = self.dt
-        self.F = np.array(
-            [
-                [1.0, 0.0, 0.0, dt, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0, dt, 0.0],
-                [0.0, 0.0, 1.0, 0.0, 0.0, dt],
-                [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=float,
-        )
-
-        # Mesure directe de tout l'état
-        self.H = np.eye(6, dtype=float)
-
-        self._initialized = False
-
-    # ------------------------------------------------------------------
-    def _init_state(self, meas_pos, meas_vel) -> None:
-        """Initialise l'état à partir de la première mesure GPS."""
-        meas_pos = np.asarray(meas_pos, dtype=float).reshape(3)
-        meas_vel = np.asarray(meas_vel, dtype=float).reshape(3)
-
-        self.x[0:3] = meas_pos
-        self.x[3:6] = meas_vel
-        self.P = np.eye(6, dtype=float) * 1e-1
-        self._initialized = True
-
-    # ------------------------------------------------------------------
-    def predict(self) -> None:
-        """Étape de prédiction de l’EKF."""
+    def predict(self, imu_acc_body, orientation_quat):
+        """
+        Prédiction aidée par l'IMU.
+        imu_acc_body : [ax, ay, az] mesuré par l'IMU (m/s^2)
+        orientation_quat : [x, y, z, w] orientation actuelle
+        """
+        # 1. Rotation de l'accélération : Repère Drone -> Repère Monde
+        # L'IMU donne l'accélération dans le repère du drone
+        R = self._quat_to_rot_matrix(orientation_quat)
+        acc_world = R @ imu_acc_body
+        
+        # 2. Retrait de la gravité
+        # L'accéléromètre mesure aussi la gravité (9.81 vers le haut quand à plat).
+        # On doit la soustraire pour obtenir l'accélération de mouvement pure.
+        acc_linear = acc_world - self.GRAVITY
+        
+        # 3. Prédiction Physique (Lois de Newton)
+        # Position future = Pos + Vel*dt + 0.5*Acc*dt^2
+        # Vitesse future  = Vel + Acc*dt
+        
+        # D'abord on applique la partie Vitesse (F*x)
         self.x = self.F @ self.x
+        
+        # Ensuite on ajoute la partie Accélération (Matrice de contrôle B*u)
+        # Terme position (0.5 * a * dt^2)
+        self.x[0:3] += 0.5 * acc_linear * (self.dt**2)
+        # Terme vitesse (a * dt)
+        self.x[3:6] += acc_linear * self.dt
+        
+        # 4. Mise à jour de la covariance
+        # On ajoute du bruit car l'IMU n'est pas parfaite
         self.P = self.F @ self.P @ self.F.T + self.Q
 
-    # ------------------------------------------------------------------
-    def update(self, z) -> None:
-        """Étape de correction de l’EKF."""
-        z = np.asarray(z, dtype=float).reshape(6)
-
-        # Innovation
-        y = z - self.H @ self.x
-
-        # Covariance de l’innovation
+    def update(self, pos_meas, vel_meas):
+        """Correction standard avec GPS"""
+        z = np.hstack([pos_meas, vel_meas])
+        y = z - (self.H @ self.x)
         S = self.H @ self.P @ self.H.T + self.R
-
-        # Gain de Kalman
-        K = self.P @ self.H.T @ np.linalg.inv(S)
-
-        # Mise à jour
-        self.x = self.x + K @ y
-        I = np.eye(6, dtype=float)
-        self.P = (I - K @ self.H) @ self.P
-
-    # ------------------------------------------------------------------
-    def step(self, meas_pos, meas_vel):
-        """
-        Appel complet : prédit puis corrige avec la mesure GPS.
-        Retourne (pos_est, vel_est).
-        """
-        meas_pos = np.asarray(meas_pos, dtype=float).reshape(3)
-        meas_vel = np.asarray(meas_vel, dtype=float).reshape(3)
-
-        if not self._initialized:
-            self._init_state(meas_pos, meas_vel)
-
-        # Prédiction
-        self.predict()
-
-        # Mise à jour
-        z = np.concatenate([meas_pos, meas_vel])
-        self.update(z)
-
-        pos_est = self.x[0:3].copy()
-        vel_est = self.x[3:6].copy()
-        return pos_est, vel_est
+        try:
+            K = self.P @ self.H.T @ np.linalg.inv(S)
+        except:
+            return self.x[:3], self.x[3:6]
+        
+        self.x = self.x + (K @ y)
+        I = np.eye(6)
+        self.P = (I - (K @ self.H)) @ self.P
+        
+        return self.x[:3], self.x[3:6]

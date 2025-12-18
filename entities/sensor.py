@@ -12,7 +12,7 @@ class Sensor:
         raise NotImplementedError("La méthode 'measure' doit être implémentée.")
 
 
-class GPSSensor(Sensor):
+class GNSSensor(Sensor):
     """
     Capteur GPS simple :
     - position_noise_std : écart-type du bruit sur la position (m)
@@ -47,76 +47,41 @@ class GPSSensor(Sensor):
         return meas_pos, meas_vel
 
 
-class IMUSensor(Sensor):
-    """
-    IMU simplifiée :
-      - accéléromètre : mesure la force spécifique en repère body (a - g)
-      - gyroscope : mesure la vitesse angulaire en repère body
+# Dans entities/sensor.py
 
-    config :
-      - accel_noise_std : écart-type bruit accel (m/s^2)
-      - gyro_noise_std  : écart-type bruit gyro (rad/s)
-      - gravity         : norme de la gravité (par défaut 9.81)
-    """
+class IMUSensor:
+    def __init__(self, config_dict=None):
+        self.last_vel = np.zeros(3)
+        self.dt = 1/240.0 # Supposé
+        self.g_vector = np.array([0, 0, 9.81])
 
-    def __init__(self, config: dict):
-        super().__init__()
-
-        self.accel_noise_std = float(config.get("accel_noise_std", 0.0))
-        self.gyro_noise_std = float(config.get("gyro_noise_std", 0.0))
-        self.gravity = float(config.get("gravity", 9.81))
-
-        self._prev_vel = np.zeros(3, dtype=float)
-        self._initialized = False
-
-    def measure(
-        self,
-        ground_truth_position: np.ndarray,
-        ground_truth_orientation: np.ndarray,
-        ground_truth_velocity: np.ndarray,
-        ground_truth_ang_vel: np.ndarray,
-        dt: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def measure(self, pos, vel, orn_q):
         """
-        Renvoie (specific_force_body, gyro_body).
-
-        - specific_force_body ≈ R^T (a_world - g_world)
-        - gyro_body ≈ vitesse angulaire fournie par PyBullet (approx)
+        Simule un accéléromètre + gyroscope
+        Retourne : acc_body, gyro_body
         """
-        if dt <= 0.0:
-            dt = 1e-6
-
-        v = np.array(ground_truth_velocity, dtype=float)
-
-        if not self._initialized:
-            a_world = np.zeros(3, dtype=float)
-            self._initialized = True
-        else:
-            a_world = (v - self._prev_vel) / dt
-
-        self._prev_vel = v
-
-        # Gravité en repère monde
-        g_world = np.array([0.0, 0.0, -self.gravity], dtype=float)
-
-        # Force spécifique en repère monde
-        f_world = a_world - g_world
-
-        # Rotation monde -> body via quaternion
-        q = ground_truth_orientation  # [x, y, z, w]
-        rot_mat = np.array(p.getMatrixFromQuaternion(q)).reshape(3, 3)
-        f_body = rot_mat.T @ f_world
-
-        # Vitesse angulaire (on la prend telle quelle, approx body)
-        omega_body = np.array(ground_truth_ang_vel, dtype=float)
-
-        # Bruits
-        if self.accel_noise_std > 0.0:
-            f_body = f_body + np.random.normal(0.0, self.accel_noise_std, 3)
-        if self.gyro_noise_std > 0.0:
-            omega_body = omega_body + np.random.normal(0.0, self.gyro_noise_std, 3)
-
-        return f_body, omega_body
+        # 1. Calcul Accélération Monde (a = dv/dt)
+        # (C'est une approximation discrete)
+        acc_world = (np.array(vel) - self.last_vel) / self.dt
+        self.last_vel = np.array(vel)
+        
+        # 2. Ajout de la "pesanteur ressentie" (Proper Acceleration)
+        # Un accéléromètre mesure (a - g). Comme g pointe vers le bas (-9.81), 
+        # a_mesure = a_monde - (-9.81) = a_monde + 9.81
+        acc_proper_world = acc_world + self.g_vector
+        
+        # 3. Rotation vers Body Frame (Monde -> Drone)
+        # On utilise la matrice inverse de rotation
+        R_world_to_body = np.array(p.getMatrixFromQuaternion(orn_q)).reshape(3,3).T
+        acc_body = R_world_to_body @ acc_proper_world
+        
+        # Ajout de bruit (facultatif)
+        acc_body += np.random.normal(0, 0.1, 3) # Bruit blanc
+        
+        # Gyro (Vitesse angulaire, ici on met 0 ou la vraie pour simplifier)
+        gyro_body = np.zeros(3) 
+        
+        return acc_body, gyro_body
 
 class LidarSensor:
     def __init__(self, config: dict):
