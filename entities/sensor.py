@@ -52,10 +52,10 @@ class GNSSensor(Sensor):
 class IMUSensor:
     def __init__(self, config_dict=None):
         self.last_vel = np.zeros(3)
-        self.dt = 1/240.0 # Supposé
+        self.dt = 1/100 # Supposé
         self.g_vector = np.array([0, 0, 9.81])
 
-    def measure(self, pos, vel, orn_q):
+    def measure(self, vel, orn_q):
         """
         Simule un accéléromètre + gyroscope
         Retourne : acc_body, gyro_body
@@ -172,3 +172,45 @@ class LidarSensor:
                     detected_points.append(hit_pos)
                 
         return detected_points
+    
+class HeightSensor:
+    def __init__(self, physics_client_id, noise_std=0.01, max_range=4.0):
+        """
+        Simule un capteur de distance orienté vers le bas (Down-facing Lidar/Sonar).
+        """
+        self.client_id = physics_client_id
+        self.noise_std = noise_std
+        self.max_range = max_range
+
+    def measure(self, pos, orn_q):
+        """
+        Retourne la distance mesurée vers le sol (ou None si hors de portée).
+        """
+        # 1. Calcul du vecteur direction (Le capteur pointe vers le "Bas" du drone)
+        # En repère monde, le bas du drone change si le drone penche (Roll/Pitch)
+        rot_mat = np.array(p.getMatrixFromQuaternion(orn_q)).reshape(3, 3)
+        # Le vecteur "Bas" dans le repère du drone est [0, 0, -1]
+        # On le tourne dans le repère monde
+        down_vec_world = rot_mat @ np.array([0, 0, -1])
+
+        # 2. Raycast (Tir du rayon)
+        start = np.array(pos)
+        end = start + (down_vec_world * self.max_range)
+        
+        results = p.rayTest(start, end, physicsClientId=self.client_id)
+        # results[0] contient [objectUniqueId, linkIndex, hitFraction, hitPosition, hitNormal]
+        
+        hit_fraction = results[0][2]
+        
+        # 3. Traitement
+        if hit_fraction == 1.0: # Rien touché
+            return None # Trop haut pour le capteur
+        
+        # Distance réelle = hit_fraction * max_range
+        dist = hit_fraction * self.max_range
+        
+        # Ajout du bruit
+        dist += np.random.normal(0, self.noise_std)
+        
+        # Protection valeurs négatives
+        return max(0.0, dist)

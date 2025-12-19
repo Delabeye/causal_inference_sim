@@ -37,7 +37,7 @@ def point_in_cylinder(point, cylinder):
 
 def discretize_obstacles(obstacles):
         points = []
-        res = 0.25
+        res = 0.15
         for obs in obstacles:
             center = np.array(obs["center"])
             otype = obs["type"]
@@ -59,7 +59,7 @@ def discretize_obstacles(obstacles):
                 for x in xs:
                     for y in ys:
                         for z in zs:
-                            if np.linalg.norm(np.array([x,y,z])-center) <= r: points.append([round(x, 2), round(y, 2), round(z, 2)])
+                            if np.linalg.norm(np.array([x,y,z])-center) <= r+res/2: points.append([round(x, 2), round(y, 2), round(z, 2)])
             elif otype == "cylinder":
                 r, h = obs["radius"], obs["height"]
                 xs = np.arange(center[0]-r, center[0]+r+res, res)
@@ -67,6 +67,6 @@ def discretize_obstacles(obstacles):
                 zs = np.arange(center[2]-h/2, center[2]+h/2+res, res)
                 for x in xs:
                     for y in ys:
-                        if np.linalg.norm(np.array([x,y])-center[:2]) <= r:
+                        if np.linalg.norm(np.array([x,y])-center[:2]) <= r+res/2:
                             for z in zs: points.append([round(x, 2), round(y, 2), round(z, 2)])
         return points

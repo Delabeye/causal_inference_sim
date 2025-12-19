@@ -6,11 +6,11 @@ import numpy as np
 import zmq 
 import json
 
-# Imports Utilitaires & Contrôle
+# Utility Imports & Control
 from utilities.utilities import point_in_cube, point_in_cylinder, discretize_obstacles
 from entities.agent import Agent
-from entities.sensor import GPSSensor, IMUSensor, LidarSensor
-from Control.EKF import GPSEKF
+from entities.sensor import GNSSensor, IMUSensor, LidarSensor
+from Control.EKF import EKF
 from Control.Path_planning import AStarPlanner
 
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
@@ -66,7 +66,7 @@ class UAV(Agent):
         self.CTRL_DT = 1.0 / self.CTRL_FREQ
         self.last_ctrl_time = -self.CTRL_DT # Force update at t=0
 
-        # --- PHYSIQUE ---
+        # --- PHYSICS ---
         self.KF = self.config.get("physics", {}).get("thrust_coeff", 6.11e-8)
         self.KM = self.config.get("physics", {}).get("torque_coeff", 1.5e-9)
         self.G = 9.81
@@ -88,14 +88,14 @@ class UAV(Agent):
         self.known_obstacles = discretize_obstacles(known_obstacles_config)
         self.obstacles = self.known_obstacles.copy()
         self.total_obstacles = [] # Combined list for avoidance
-        print(len(self.known_obstacles), "points d'obstacles connus chargés.")
+        print(len(self.known_obstacles), "known obstacle points loaded.")
         
         a_config = {"world_bounds": {"x": [-10, 10], "y": [-10, 10], "z": [0.1, 5.0]}}
         self.planner = AStarPlanner(self.config.get("astar", a_config))
         
         self.target_yaw_cache = 0.0
         
-        # États du Planning
+        # Planning States
         self.active_path = []
         self.is_planning = False      
         self.planning_thread = None   
@@ -114,10 +114,10 @@ class UAV(Agent):
         self.com_period = 0.1 
         self.last_com_time = -self.com_period
         
-        # --- CAPTEURS ---
+        # --- SENSORS ---
         sens = config.get("sensors", {})
-        self.ekf = GPSEKF(dt); self.ekf.x[:3] = self.start_pos
-        self.gps = GPSSensor(sens.get("gps", {}))
+        self.ekf = EKF(dt); self.ekf.x[:3] = self.start_pos
+        self.gnss = GNSSensor(sens.get("gps", {}))
         self.imu = IMUSensor(sens.get("imu", {}))
         self.lidar = LidarSensor(sens.get("lidar", {}))
         
@@ -125,6 +125,9 @@ class UAV(Agent):
         self.lidar_period = 1.0 / lidar_freq
         self.last_lidar_time = -self.lidar_period
         
+        self.gnss_FREQ = 10.0                # 10 Hz (Realistic Standard)
+        self.gnss_DT = 1.0 / self.gnss_FREQ
+        self.last_gnss_update_time = -self.gnss_DT
         # Logs
         self.logging_enabled = True
         self.log_file = os.path.join("logs", f"{self.name}.csv")
@@ -135,7 +138,7 @@ class UAV(Agent):
         p.changeDynamics(self.bodyId, -1, linearDamping=0, angularDamping=0)
 
     # ----------------------------------------------------------------------
-    # API SWARM 
+    # SWARM API
     # ----------------------------------------------------------------------
     def set_swarm_activate(self):
         self.swarm_active = True
@@ -166,7 +169,7 @@ class UAV(Agent):
             else:
                 self.Calculation_fail_count += 1
         except Exception as e:
-            print(f"[{self.name}] 💥 Error thread A*: {e}")
+            print(f"[{self.name}] 💥 Error in A* thread: {e}")
         finally:
             self.is_planning = False 
 
@@ -193,7 +196,7 @@ class UAV(Agent):
                         if dist_ortho < 0.6: return "BLOCKED"
         return "CLEAR"
     
-    def _compute_repulsive_force(self, current_pos, obstacles, safety_radius=1.0, max_force=2.0):
+    def _compute_repulsive_force(self, current_pos, obstacles, safety_radius=1.0, max_force=1.0):
         force_vec = np.array([0.0, 0.0, 0.0])
         if not obstacles: return force_vec
 
@@ -213,7 +216,7 @@ class UAV(Agent):
         return force_vec
     
     # ----------------------------------------------------------------------
-    # COMMUNICATION 
+    # COMMUNICATION
     # ----------------------------------------------------------------------
     def setup_network(self, ip, port_pub, port_sub):
         self.zmq_ctx = zmq.Context()
@@ -261,7 +264,7 @@ class UAV(Agent):
             self.last_ctrl_time = self._sim_time
             
         # 3. Physics Application (Always 240Hz)
-        # Using the last calculated RPMs to maintain stability
+        # Use the last calculated RPMs to maintain stability
         gt = self.get_ground_truth_state()
         self._apply_lib_physics(self.last_rpms, gt)
         
@@ -274,12 +277,34 @@ class UAV(Agent):
         High-Level Logic Loop (100 Hz).
         Handles: Sensors, Communication, Planning, and PID Calculation.
         """
-        # --- STATE UPDATE ---
         gt = self.get_ground_truth_state()
-        pos, vel = gt["pos"], gt["vel"]
-        orn_q, ang_vel = gt["orn_q"], gt["ang_vel"]
-        rpy = p.getEulerFromQuaternion(orn_q)
+        orn_q = np.array(gt["orn_q"])
+        ang_vel = np.array(gt["ang_vel"])
+        rpy = np.array(p.getEulerFromQuaternion(orn_q))
 
+        # ==================== ADVANCED SENSOR FUSION ====================
+        
+        # 1. Read Sensors (Noisy)
+        if (self._sim_time - self.last_gnss_update_time) >= self.gnss_DT:
+            meas_pos, meas_vel = self.gnss.measure(gt["pos"], gt["vel"])
+            self.ekf.update(meas_pos, meas_vel)
+            self.last_gnss_update_time = self._sim_time
+        
+        # Read the IMU (Acceleration + Orientation)
+        # Note: In simple PyBullet, you can cheat and take gt['orn_q']
+        # or use self.imu.measure(...) if your IMU sensor is complete.
+        # Here I assume self.imu returns the raw accel.
+        imu_acc, _ = self.imu.measure(gt["vel"], gt["orn_q"]) 
+        # Note: Make sure your IMUSensor returns a np.array for imu_acc
+        
+        # 2. EKF Prediction (Based on IMU!)
+        # This is where the magic happens: the EKF knows we're accelerating
+        self.ekf.predict(imu_acc_body=imu_acc, orientation_quat=gt["orn_q"])
+        
+        # 3. EKF Correction (GPS)
+        # GPS corrects for IMU drift
+        pos = self.ekf.x[:3]
+        vel = self.ekf.x[3:6]
         # Reset known obstacles periodically
         if self._sim_time > 0 and (self._sim_time % 10) < self.dt:
             self.obstacles = self.known_obstacles.copy()
@@ -349,22 +374,28 @@ class UAV(Agent):
                 return # Skip this cycle to reset logic
             # ----------------------
 
-            while self.wp_idx < len(self.waypoints):
-                global_target = self.waypoints[self.wp_idx]
-                
-                if len(self.active_path) == 0:
-                    status = self._analyze_target_accessibility(pos, global_target, self.obstacles)
-                    
-                    if status == "INVALID":
-                        print(f"[{self.name}] Target {self.wp_idx} Wall. Skip.")
+            else:
+            # Detect arrival at Waypoint
+                if self.wp_idx < len(self.waypoints):
+                    dist_wp = np.linalg.norm(self.waypoints[self.wp_idx] - pos)
+                    if dist_wp < 0.3:
+                        print(f"[{self.name}] Waypoint {self.wp_idx} reached.")
                         self.wp_idx += 1
-                        continue 
-                    elif status == "BLOCKED":
+                        self.active_path = [] # Force a new calculation
+                        self.replan_timer = 0
+
+                while self.wp_idx < len(self.waypoints):
+                    global_target = self.waypoints[self.wp_idx]
+                
+                    if len(self.active_path) == 0:
+                        # Force A* planning to trigger for each new WP
                         if self.replan_timer <= 0:
-                            self._trigger_planning(pos, global_target, self.obstacles)
+                            self._trigger_planning(pos, global_target, self.total_obstacles)
                             self.replan_timer = 50 
                         break 
-                break
+                    break
+
+
 
             # Follow Path
             if len(self.active_path) > 0:
@@ -387,11 +418,11 @@ class UAV(Agent):
 
         # --- CONTROL COMMANDS ---
         # Repulsive Force
-        F_rep = self._compute_repulsive_force(pos, self.total_obstacles, safety_radius=0.45, max_force=1.0)    
+        F_rep = self._compute_repulsive_force(pos, self.total_obstacles, safety_radius=0.45, max_force=0.75)    
         drone_mass = self.config.get("mass", 0.03) 
         acc_rep = F_rep / drone_mass
         
-        final_target_vel = target_vel + (acc_rep * 5 * self.CTRL_DT) # Use CTRL_DT here
+        final_target_vel = target_vel + (acc_rep * 3 * self.CTRL_DT) # Use CTRL_DT here
 
         # Clamp Speed
         max_speed_xy = 5.0 

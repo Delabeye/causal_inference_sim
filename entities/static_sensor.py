@@ -14,7 +14,7 @@ class RadarStation(Agent):
         self.velocity_noise_std = float(self.config.get("velocity_noise_std", 0.0))
         self.bodyId = self.config.get("bodyId", 1000)   
         # 1. Configuration Physique
-        # On utilise une forme visuelle simple (cylindre ou cube)
+
         start_pos = self.config.get("pos", [0, 0, 0])
         start_orn = p.getQuaternionFromEuler([0, 0, 0])
         urdf_path = self.config.get("urdf_path", "assets/radar.urdf")
@@ -57,8 +57,6 @@ class RadarStation(Agent):
         Boucle principale du radar : Scan de l'environnement
         """
         self.detected_agents = []
-        my_pos, _ = p.getBasePositionAndOrientation(self.bodyId, physicsClientId=self.physics_client_id)
-        my_pos = np.array(my_pos)
 
         for agent in self.targets:
             # On ne se détecte pas soi-même
@@ -70,7 +68,7 @@ class RadarStation(Agent):
             target_pos = np.array(target_pos)
             target_vel, _ = p.getBaseVelocity(agent.bodyId, physicsClientId=self.physics_client_id)
             # Calcul distance
-            dist = np.linalg.norm(target_pos - my_pos)
+            dist = np.linalg.norm(target_pos - self.pos)
             
             if dist <= self.detection_range:
                 pos_noise = np.random.normal(0.0, self.pos_noise_std, 3)

@@ -1,38 +1,38 @@
 import numpy as np
 
-class GPSEKF:
+class EKF:
     def __init__(self, dt):
         self.dt = dt
-        # État : [x, y, z, vx, vy, vz]
+        # State: [x, y, z, vx, vy, vz]
         self.x = np.zeros(6)
         
-        # Matrice de Transition (Partie cinématique simple x = x + v*dt)
+        # Transition Matrix (Simple kinematics: x = x + v*dt)
         self.F = np.eye(6)
-        self.F[0, 3] = dt
-        self.F[1, 4] = dt
-        self.F[2, 5] = dt
+        self.F[0, 3] = self.dt
+        self.F[1, 4] = self.dt
+        self.F[2, 5] = self.dt
         
-        # Incertitude initiale
+        # Initial uncertainty
         self.P = np.eye(6) * 1.0
         
-        # Bruit du processus (Q)
-        # On réduit le bruit sur la vitesse car l'IMU va nous donner l'info précise
+        # Process noise (Q)
+        # Reduce velocity noise since IMU provides precise info
         self.Q = np.eye(6)
         self.Q[0:3, 0:3] *= 0.01 
         self.Q[3:6, 3:6] *= 0.05 
 
-        # Matrices de Mesure GPS (Position + Vitesse)
+        # Measurement matrices GPS (Position + Velocity)
         self.H = np.eye(6)
         self.R = np.eye(6)
-        self.R[0:3, 0:3] *= 2.0   # Confiance GPS Position (Faible)
-        self.R[3:6, 3:6] *= 0.5   # Confiance GPS Vitesse (Moyenne)
+        self.R[0:3, 0:3] *= 2.0   # GPS Position confidence (Low)
+        self.R[3:6, 3:6] *= 0.5   # GPS Velocity confidence (Medium)
 
         self.GRAVITY = np.array([0, 0, 9.81])
 
     def _quat_to_rot_matrix(self, q):
-        """Convertit un quaternion [x, y, z, w] en matrice de rotation 3x3"""
+        """Convert quaternion [x, y, z, w] to 3x3 rotation matrix"""
         x, y, z, w = q
-        # Formule standard
+        # Standard formula
         R = np.array([
             [1 - 2*(y**2 + z**2), 2*(x*y - z*w),     2*(x*z + y*w)],
             [2*(x*y + z*w),     1 - 2*(x**2 + z**2), 2*(y*z - x*w)],
@@ -42,39 +42,39 @@ class GPSEKF:
 
     def predict(self, imu_acc_body, orientation_quat):
         """
-        Prédiction aidée par l'IMU.
-        imu_acc_body : [ax, ay, az] mesuré par l'IMU (m/s^2)
-        orientation_quat : [x, y, z, w] orientation actuelle
+        IMU-aided prediction.
+        imu_acc_body: [ax, ay, az] measured by IMU (m/s^2)
+        orientation_quat: [x, y, z, w] current orientation
         """
-        # 1. Rotation de l'accélération : Repère Drone -> Repère Monde
-        # L'IMU donne l'accélération dans le repère du drone
+        # 1. Acceleration rotation: Drone frame -> World frame
+        # IMU gives acceleration in drone reference frame
         R = self._quat_to_rot_matrix(orientation_quat)
         acc_world = R @ imu_acc_body
         
-        # 2. Retrait de la gravité
-        # L'accéléromètre mesure aussi la gravité (9.81 vers le haut quand à plat).
-        # On doit la soustraire pour obtenir l'accélération de mouvement pure.
+        # 2. Remove gravity
+        # Accelerometer also measures gravity (9.81 upward when flat).
+        # Must subtract to get pure motion acceleration.
         acc_linear = acc_world - self.GRAVITY
         
-        # 3. Prédiction Physique (Lois de Newton)
-        # Position future = Pos + Vel*dt + 0.5*Acc*dt^2
-        # Vitesse future  = Vel + Acc*dt
+        # 3. Physics prediction (Newton's laws)
+        # Future position = Pos + Vel*dt + 0.5*Acc*dt^2
+        # Future velocity = Vel + Acc*dt
         
-        # D'abord on applique la partie Vitesse (F*x)
+        # First apply velocity part (F*x)
         self.x = self.F @ self.x
         
-        # Ensuite on ajoute la partie Accélération (Matrice de contrôle B*u)
-        # Terme position (0.5 * a * dt^2)
+        # Then add acceleration part (Control matrix B*u)
+        # Position term (0.5 * a * dt^2)
         self.x[0:3] += 0.5 * acc_linear * (self.dt**2)
-        # Terme vitesse (a * dt)
+        # Velocity term (a * dt)
         self.x[3:6] += acc_linear * self.dt
         
-        # 4. Mise à jour de la covariance
-        # On ajoute du bruit car l'IMU n'est pas parfaite
+        # 4. Covariance update
+        # Add noise since IMU is imperfect
         self.P = self.F @ self.P @ self.F.T + self.Q
 
     def update(self, pos_meas, vel_meas):
-        """Correction standard avec GPS"""
+        """Standard GPS correction"""
         z = np.hstack([pos_meas, vel_meas])
         y = z - (self.H @ self.x)
         S = self.H @ self.P @ self.H.T + self.R
