@@ -18,11 +18,7 @@ world:
       height: 2.0
       knowledge: True
       id : 1
-    - type: "sphere"
-      center: [-2.0, 1.0, 1.0]
-      radius: 0.5
-      knowledge: True
-      id : 2
+
     - type: "cylinder"
       center: [0.0, 3.0, 1.5]
       radius: 0.25
@@ -31,7 +27,7 @@ world:
       id : 3
 
 swarm:
-  enabled: true       
+  enabled: true     
   leader: "drone_0"   
   min_sep: 0.6        
   avoid_gain: 0.5     
@@ -41,7 +37,9 @@ agents:
   - type: "uav"
     name: "drone_0"
     urdf_path: "assets/quadrotor.urdf"
-    start_pos: [0.0, 0.0, 1.0]
+    body_id: 0000
+    mass: 0.027
+    start_pos: [0.0, 0.0, 0.0]
     start_orn_euler: [0.0, 0.0, 0.0]
     physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
     waypoints: [[5.0, 0.0, 1.0], [2.0, 1.0, 1.0], [2.0, -1.0, 1.2], [0.0, -2.0, 1.0], [-2.0, -1.0, 1.0], [-2.0, 1.0, 1.2], [0.0, 0.0, 1.0]]
@@ -57,29 +55,25 @@ agents:
     pitch_max_deg: 35.0
     roll_max_deg: 35.0
     tilt_smoothing: 0.5
+    
     sensors:
       gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
       imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
       lidar: {enabled: true, max_distance: 20.0, angle_resolution: 4.0, fov_horizontal: 90.0, fov_vertical: 30.0, frequency: 10.0}
     astar:
       world_bounds: {x: [-10, 10], y: [-10, 10], z: [0.1, 5.0]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
+
 
   #------------------- SUIVEURS (Décalés pour éviter la Sphère à -2,1) ------------------------
   - type: "uav"
     name: "drone_1"
     urdf_path: "assets/quadrotor.urdf"
-    start_pos: [-0.5, -0.5, 1.0] 
+    body_id: 0001
+    mass: 0.027
+    start_pos: [-0.5, -0.5, 0.0] 
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
     physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
     sensors:
       gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
       imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
@@ -90,14 +84,12 @@ agents:
   - type: "uav"
     name: "drone_2"
     urdf_path: "assets/quadrotor.urdf"
-    start_pos: [-0.5, 0.5, 1.0] 
+    body_id: 0002
+    mass: 0.027
+    start_pos: [-0.5, 0.5, 0.0] 
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
     physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
     sensors:
       gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
       imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
@@ -108,14 +100,14 @@ agents:
   - type: "uav"
     name: "drone_3"
     urdf_path: "assets/quadrotor.urdf"
-    start_pos: [-1.0, 0.0, 1.0] # <--- DÉCALÉ POUR NE PAS ÊTRE SUR LA SPHERE (-2,1)
+    body_id: 0003
+    mass: 0.027
+    start_pos: [-1.0, 0.0, 0.0] # <--- DÉCALÉ POUR NE PAS ÊTRE SUR LA SPHERE (-2,1)
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
+    safety_radius: 0.35
+    max_repulsive_force: 1.0
     physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
     sensors:
       gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
       imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
@@ -127,10 +119,13 @@ agents:
     type: "radar"
     pos: [3, 3, 0]      
     range: 4.0          
-    urdf_path: "assets/cube.urdf"
+    urdf_path: "assets/radar.urdf"
 
   - name: "Radar_Beta"
     type: "radar"
     pos: [5, 5, 0]
     range: 1.5
-    urdf_path: "assets/cube.urdf"
+    urdf_path: "assets/radar.urdf"
+    position_noise_std: 0.2
+    velocity_noise_std: 0.1
+    body_id: 1001

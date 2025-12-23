@@ -1,7 +1,9 @@
-# swarm/swarm.py
+import json
 import numpy as np
 import pybullet as p
 from entities.uav import UAV
+import zmq
+import threading
 
 class Swarm:
     """
@@ -24,30 +26,57 @@ class Swarm:
         min_sep: float = 0.6,
         avoid_gain: float = 0.5,
         formation_body_offsets: dict[str, np.ndarray] | None = None,
+        port_in: int = 5556,
+        port_out: int = 5557,
+        ip: str = "localhost",
     ):
         if len(agents) == 0:
             raise ValueError("Swarm nécessite au moins un agent UAV.")
-
+        self.sim_time = 0.0
+        self.dt = agents[0].dt
         self.agents = agents
-
+        self.name =  "swarm 1"
+        #broadcast a 50 Hz
+        self.broadcast_interval = 0.02  # broadcast à chaque step
+        self.last_broadcast = -self.broadcast_interval
+        self.prev_targets = {}
         # Choix du leader
         if leader_name is not None:
             leader_list = [a for a in agents if getattr(a, "name", "") == leader_name]
             if len(leader_list) == 0:
                 raise ValueError(f"Aucun UAV avec name='{leader_name}' trouvé pour le leader.")
             self.leader = leader_list[0]
+            self.leader.leader = True
         else:
             # par défaut, le premier UAV de la liste est le leader
             self.leader = agents[0]
-
+            self.leader.leader = True
+        self.agents_data = {}
+        for agent in self.agents:
+            self.agents_data[agent.name] = {"name" : agent.name, "pos": agent.start_pos, "vel": [0,0,0], "yaw": agent.start_orn[2]}
+            agent.set_swarm_activate()  # Indique que l'agent fait partie d'un essaim
+            
+        self.followers_future_state = self.agents_data.copy()
         # Followers = tous les autres
-        self.followers: list[UAV] = [a for a in agents if a is not self.leader]
+        self.followers: list[UAV] = [a for a in agents if a is not self.leader and a.type == "uav"]
         self.physics_client_id = self.leader.physics_client_id
 
+        self.radar= [a for a in agents if a.type == "radar"]
+                
         # ----------------- PARAMÈTRES D'ÉVITAGE -----------------
         self.min_sep = float(min_sep)
         self.avoid_gain = float(avoid_gain)
 
+        # ----------------- PARAMÈTRES RÉSEAU -----------------
+        self.port_in = port_in
+        self.port_out = port_out
+        self.ip = ip
+        self.init_proxy()
+        self.setup_swarm_com()
+        for a in self.agents:
+            if hasattr(a, "setup_network"):
+                a.setup_network(self.ip,self.port_in, self.port_out)
+        self.leader.setup_network(ip, port_in, port_out)
         # ----------------- OFFSETS DE FORMATION -----------------
         self.formation_body_offsets: dict[str, np.ndarray] = {}
 
@@ -75,8 +104,8 @@ class Swarm:
         """
         Assigne automatiquement une formation triangulaire derrière le leader.
         """
-        spacing_x = 0.7  # distance entre rangées en x (m)
-        spacing_y = 0.7  # distance latérale en y (m)
+        spacing_x = 1  # distance entre rangées en x (m)
+        spacing_y = 1  # distance latérale en y (m)
 
         followers = self.followers
         n = len(followers)
@@ -102,94 +131,210 @@ class Swarm:
                 )
                 idx += 1
             row += 1
+    
+    # ------------------------------------------------------------------
+    def init_proxy(self):
+        def run_proxy():
+            try:
+                # Contexte ZMQ pour le thread proxy
+                ctx = zmq.Context()
 
+                # FRONTEND (Entrée) : Utiliser XSUB pour relayer les abonnements
+                frontend = ctx.socket(zmq.XSUB)
+                frontend.bind(f"tcp://*:{self.port_in}")
+
+                # BACKEND (Sortie) : Utiliser XPUB pour diffuser
+                backend = ctx.socket(zmq.XPUB)
+                backend.bind(f"tcp://*:{self.port_out}")
+
+                print(f"[Swarm Network] Proxy démarré (In: {self.port_in} -> Out: {self.port_out})")
+                
+                # Le proxy tourne ici indéfiniment. 
+                # On ne stocke PAS les sockets dans 'self' car ils appartiennent à ce thread.
+                zmq.proxy(frontend, backend)
+                
+            except zmq.ContextTerminated:
+                print("[Swarm Network] Contexte ZMQ terminé.")
+            except Exception as e:
+                print(f"[Swarm Network] Erreur dans le proxy : {e}")
+            finally:
+                # Nettoyage propre au thread
+                frontend.close()
+                backend.close()
+                ctx.term()
+
+        # Démarrage du thread
+        self.proxy_thread = threading.Thread(target=run_proxy, daemon=True)
+        self.proxy_thread.start()
+
+    def setup_swarm_com(self):
+        """
+        Configure le Swarm pour qu'il écoute aussi son propre réseau 
+        (comme un drone client).
+        """
+        self.client_ctx = zmq.Context()
+        self.sub_socket = self.client_ctx.socket(zmq.SUB)
+        self.pub_socket = self.client_ctx.socket(zmq.PUB)
+        # On se CONNECTE à localhost (car le proxy est sur la même machine)
+        self.sub_socket.connect(f"tcp://localhost:{self.port_out}")
+        
+        # On s'abonne à tout (ou au topic 'SWARM')
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "") 
+        self.sub_socket.setsockopt(zmq.RCVTIMEO, 1) # Timeout 1ms pour ne pas bloquer
+
+        self.pub_socket.connect(f"tcp://localhost:{self.port_in}")
+        self.pub_socket.setsockopt(zmq.LINGER, 1)  # Fermeture immédiate
+
+    def broadcast_state(self):
+        """Envoie la position et vitesse actuelle au réseau"""
+        # Envoi sur le topic 'SWARM'
+        # Format: "TOPIC JSON"
+        self.pub_socket.send_string("SWARM " + json.dumps(self.agents_data))
+
+    def broadcast_future_pos(self):
+        """Envoie la position future calculée des followers au réseau"""
+        # Envoi sur le topic 'FUTURE_POS'
+        self.pub_socket.send_string("FUTURE_POS " + json.dumps(self.followers_future_state))
+        pass
+
+    def listen_swarm(self):
+        """
+        Vérifie la boite aux lettres et met à jour la liste des voisins.
+        À appeler à chaque step.
+        """
+        while True:
+            try:
+                # Lecture non-bloquante
+                msg = self.sub_socket.recv_string()
+                
+                # 1. Vérification de sécurité : faut-il un espace ?
+                if " " not in msg:
+                    continue # Message malformé, on ignore
+                
+                # 2. Découpage standard sur le PREMIER espace
+                topic, json_str = msg.split(" ", 1)
+                
+                # 3. Traitement selon le Topic
+                if topic == "State":
+                    data = json.loads(json_str)
+                    # On ignore ses propres messages (si le swarm s'écoute lui-même via proxy)
+                    # Note : Le Swarm n'a pas de "name" dans agents_data, donc pas de risque de conflit direct
+                    # sauf si 'data' vient d'un agent qu'on suit.
+                    if "name" in data:
+                        self.agents_data[data["name"]] = data
+                        
+            except zmq.Again:
+                # Plus de messages
+                break
+            except Exception as e:
+                print(f"Erreur réseau sur {self.name}: {e}")
+                break
+
+    def cleanup(self):
+        """Ferme proprement les connexions (important)"""
+        self.sub_socket.close()
+        self.pub_socket.close()
+        self.client_ctx.term()
     # ------------------------------------------------------------------
     def update(self):
         """
-        Met à jour la cible de chaque follower (Position, Vitesse et Yaw).
+        Met à jour la cible avec un LISSAGE DU YAW pour éviter les sauts de position.
         """
-        if len(self.followers) == 0:
-            return
+        if (self.sim_time - self.last_broadcast) >= self.broadcast_interval:
+            if len(self.followers) == 0:
+                return
+            self.listen_swarm()
 
-        # 1) Lecture de la pose du leader
-        try:
-            state_leader = self.leader.get_ground_truth_state()
-        except p.error:
-            return
-
-        pos_leader = state_leader["pos"]      # [x, y, z] monde
-        vel_leader = state_leader["vel"]      # [vx, vy, vz] monde (pour feedforward)
-        orn_leader = state_leader["orn_q"]    # quaternion
-        roll, pitch, yaw = p.getEulerFromQuaternion(orn_leader)
-
-        # Matrice de rotation yaw
-        cy = np.cos(yaw)
-        sy = np.sin(yaw)
-        R_yaw = np.array(
-            [
-                [cy, -sy, 0.0],
-                [sy,  cy, 0.0],
-                [0.0, 0.0, 1.0],
-            ],
-            dtype=float,
-        )
-
-        # 2) Récupérer la position courante de tous les drones pour l'évitement
-        all_agents = [self.leader] + self.followers
-        positions: dict[str, np.ndarray] = {}
-
-        for a in all_agents:
+            # 1) Lecture de la pose du leader
             try:
-                st = a.get_ground_truth_state()
-                positions[a.name] = st["pos"]
-            except p.error:
-                continue
+                state_leader = self.agents_data[self.leader.name]
+            except KeyError:
+                return
 
-        # 3) Calcul de la cible de chaque follower
-        for follower in self.followers:
-            off_body = self.formation_body_offsets.get(follower.name, None)
-            if off_body is None:
-                continue
+            pos_leader = np.array(state_leader["pos"])
+            vel_leader = np.array(state_leader["vel"])
+            target_yaw_leader = state_leader["yaw"]
 
-            # --- Cible nominale en repère monde ---
-            off_world = R_yaw @ off_body
-            base_target = pos_leader + off_world  # [x, y, z]
+            # --- INIT DU SMOOTHER ---
+            # On stocke le yaw lissé dans self pour la continuité entre les steps
+            if not hasattr(self, "smooth_swarm_yaw"):
+                self.smooth_swarm_yaw = target_yaw_leader
 
-            # --- Correction de répulsion ---
-            correction = np.zeros(3, dtype=float)
-            pos_f = positions.get(follower.name, base_target)
+            # --- ALGORITHME DE LISSAGE (Low Pass Filter sur l'angle) ---
+            # On calcule la différence d'angle (en gérant le saut -pi/pi)
+            diff_yaw = np.arctan2(np.sin(target_yaw_leader - self.smooth_swarm_yaw), 
+                                  np.cos(target_yaw_leader - self.smooth_swarm_yaw))
+            
+            # Paramètre de fluidité :
+            # 0.1 = très lent (le swarm met du temps à tourner)
+            # 0.5 = réactif mais fluide
+            # 1.0 = instantané (votre code actuel qui crash)
+            alpha_yaw = 0.3 
+            
+            # On limite aussi la vitesse de rotation max du groupe (ex: 1 rad/s)
+            max_rot_speed = 2.0 * self.dt 
+            step_yaw = np.clip(diff_yaw * alpha_yaw, -max_rot_speed, max_rot_speed)
+            
+            self.smooth_swarm_yaw += step_yaw
 
-            for other in all_agents:
-                if other is follower:
-                    continue
+            # C'est CE yaw lissé qu'on utilise pour la géométrie
+            cy = np.cos(self.smooth_swarm_yaw)
+            sy = np.sin(self.smooth_swarm_yaw)
+            R_yaw = np.array([[cy, -sy, 0.0], [sy,  cy, 0.0], [0.0, 0.0, 1.0]])
 
-                pos_o = positions.get(other.name, None)
-                if pos_o is None:
-                    continue
+            # 2) Récup positions (inchangé)
+            all_agents = [self.leader] + self.followers
+            positions = {}
+            for a in all_agents:
+                try:
+                    st = a.get_ground_truth_state()
+                    positions[a.name] = st["pos"]
+                except: continue
 
-                # Évitement en XY uniquement
-                diff = base_target - pos_o
-                diff[2] = 0.0
+            # 3) Calcul des cibles
+            dt_swarm = self.sim_time - self.last_broadcast 
+            if dt_swarm <= 0: dt_swarm = 0.1
 
-                dist = float(np.linalg.norm(diff))
-                if dist < 1e-6:
-                    continue
+            for follower in self.followers:
+                off_body = self.formation_body_offsets.get(follower.name, None)
+                if off_body is None: continue
 
-                if dist < self.min_sep:
-                    repulse_dir = diff / dist
-                    amplitude = (self.min_sep - dist)
-                    correction += amplitude * repulse_dir
+                # Position cible basée sur le YAW LISSÉ
+                off_world = R_yaw @ off_body
+                base_target = pos_leader + off_world
 
-            # Applique la correction
-            final_target = base_target + self.avoid_gain * correction
-            final_target[2] = base_target[2]
+                # Correction Répulsion (inchangé)
+                correction = np.zeros(3)
+                pos_f = positions.get(follower.name, base_target)
+                for other in all_agents:
+                    if other is follower: continue
+                    pos_o = positions.get(other.name, None)
+                    if pos_o is None: continue
+                    diff = base_target - pos_o; diff[2] = 0.0
+                    dist = float(np.linalg.norm(diff))
+                    if 0 < dist < self.min_sep:
+                        correction += (self.min_sep - dist) * (diff / dist)
 
-            # 4) Envoi de la commande au suiveur (Pos + Vel + YAW)
-            if hasattr(follower, "set_swarm_command"):
-                # On force le follower à prendre le même cap (yaw) que le leader
-                follower.set_swarm_command(final_target, vel_leader, target_yaw=yaw)
-            else:
-                if hasattr(follower, "set_target_pos"):
-                    follower.set_target_pos(final_target)
-                else:
-                    follower.target_pos = final_target
+                final_target = base_target + self.avoid_gain * correction
+                final_target[2] = base_target[2]
+
+                # Calcul vitesse (méthode précédente)
+                prev_target = self.prev_targets.get(follower.name, final_target) if hasattr(self, "prev_targets") else final_target
+                if not hasattr(self, "prev_targets"): self.prev_targets = {}
+                
+                target_vel_computed = (final_target - prev_target) / dt_swarm
+                self.prev_targets[follower.name] = final_target
+
+                self.followers_future_state[follower.name] = {
+                    "pos": final_target.tolist(), 
+                    "vel": target_vel_computed.tolist(),
+                    "yaw": self.smooth_swarm_yaw # On demande au drone de suivre le lissage
+                }
+            
+            self.broadcast_state() 
+            self.broadcast_future_pos()
+            self.last_broadcast = self.sim_time
+            self.sim_time += self.dt
+        else:
+            self.sim_time += self.dt
+#            

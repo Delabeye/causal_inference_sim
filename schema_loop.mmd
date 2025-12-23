@@ -14,12 +14,16 @@ flowchart LR
     swarm["Swarm"]
   end
 
+  subgraph Proxy
+    proxy["Proxy"]
+  end
+
   subgraph UAVLayer
     agent["Agent"]
     uav["UAV"]
     pid["PID"]
     sensors["Sensors"]
-    ekf["GNSSEKF"]
+    ekf["EKF"]
     logger["Logger_CSV"]
   end
 
@@ -41,6 +45,11 @@ flowchart LR
   %% Swarm creates UAVs
   swarm -->|create_uav| uav
 
+  %% Message passing via Proxy
+  swarm -->|send_commands| proxy
+  proxy -->|forward_commands| uav
+
+
   %% Inheritance
   agent -->|base_class_of| uav
 
@@ -58,9 +67,10 @@ flowchart LR
   %% Data flow
   pyb -->|ground_truth_state_to_control| uav
 
-  gnss -->|gps_measurements| uav
-  gnss -->|gps_measurements| ekf
+  gnss -->|gnss_measurements| uav
+  gnss -->|gnss_measurements| ekf
   imu -->|imu_measurements| uav
+  imu -->|imu_measurements| ekf
   lidar -->|lidar_measurements| uav
 
   ekf -->|estimated_state_to_uav| uav
