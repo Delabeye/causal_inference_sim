@@ -5,6 +5,7 @@ import pybullet as p
 import numpy as np
 import zmq 
 import json
+import random
 
 # Utility Imports & Control
 from utilities.utilities import point_in_cube, point_in_cylinder, discretize_obstacles
@@ -12,6 +13,7 @@ from entities.agent import Agent
 from entities.sensor import GNSSensor, IMUSensor, LidarSensor
 from Control.EKF import EKF
 from Control.Path_planning import AStarPlanner
+from environment.wind import DrydenGustModel
 
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.utils.enums import DroneModel
@@ -23,30 +25,32 @@ class UAV(Agent):
         Initialize a UAV entity with physics simulation, control systems, and autonomous capabilities.
         Args:
             config (dict): Configuration dictionary containing:
-                - name (str, optional): UAV identifier. Defaults to "UAV".
-                - body_id (int, optional): Physics body ID. Defaults to 0000.
-                - mass (float, optional): UAV mass in kg. Defaults to 1.5.
-                - urdf_path (str, optional): Path to URDF model file. Defaults to "assets/quadrotor.urdf".
-                - start_pos (list, optional): Initial position [x, y, z]. Defaults to [0, 0, 1.0].
-                - start_orn_euler (list, optional): Initial orientation in Euler angles. Defaults to [0, 0, 0].
-                - waypoints (list, optional): List of waypoint coordinates. Defaults to [[0, 0, 1]].
-                - astar (dict, optional): A* planner configuration with world bounds.
-                - sensors (dict, optional): Sensor configurations for GPS, IMU, and Lidar.
-                - physics (dict, optional): Physics parameters including thrust_coeff, torque_coeff, max_rpm.
+                - name (str): UAV identifier. Defaults to "UAV".
+                - body_id (int): Physics body ID. Defaults to 0000.
+                - mass (float): UAV mass in kg. Defaults to 1.5.
+                - urdf_path (str): Path to URDF model file. Defaults to "assets/quadrotor.urdf".
+                - start_pos (list): Initial position [x, y, z]. Defaults to [0, 0, 1.0].
+                - start_orn_euler (list): Initial orientation in Euler angles. Defaults to [0, 0, 0].
+                - waypoints (list): List of waypoint coordinates. Defaults to [[0, 0, 1]].
+                - ctrl_freq (int): Control loop frequency in Hz. Defaults to 100.
+                - wind_mean (list): Mean wind vector [x, y, z]. Defaults to [0, 0, 0].
+                - turbulence (float): Dryden gust model turbulence level. Defaults to 15.
+                - astar (dict): A* planner configuration with world bounds.
+                - communication (dict): Network communication settings (com_period, com_delay_mean, com_delay_std).
+                - sensors (dict): Sensor configurations for GNSS, IMU, and Lidar.
+                - physics (dict): Physics parameters (thrust_coeff, torque_coeff, max_rpm, max_speed).
             physics_client_id (int): PyBullet physics client identifier.
             dt (float): Physics simulation timestep in seconds.
             known_obstacles_config (list[dict]): Configuration list for known static obstacles.
         Initializes:
             - Physics engine connection and body properties
-            - Control system (DSL PID controller at 100Hz)
-            - Navigation system with waypoint planning
-            - A* path planner with world bounds
-            - Sensor suite (EKF, GPS, IMU, Lidar)
-            - Swarm coordination parameters
-            - Communication timing
-            - Logging system
+            - Control system (DSL PID controller at configurable frequency, default 100Hz)
+            - Navigation system with waypoint planning and A* path planner
+            - Sensor suite (EKF, GNSS, IMU, Lidar)
+            - Swarm coordination parameters and communication infrastructure
+            - Wind and turbulence simulation (Dryden Gust Model)
+            - Logging system for trajectory tracking
         """
-        """"""
         self.config = config
         self.dt = float(dt)
         self.physics_client_id = physics_client_id
@@ -62,7 +66,7 @@ class UAV(Agent):
         self._sim_time = 0.0
         
         # --- CONTROL FREQUENCY OPTIMIZATION (100Hz) ---
-        self.CTRL_FREQ = 100.0  
+        self.CTRL_FREQ = self.config.get("ctrl_freq",100)
         self.CTRL_DT = 1.0 / self.CTRL_FREQ
         self.last_ctrl_time = -self.CTRL_DT # Force update at t=0
 
@@ -71,6 +75,7 @@ class UAV(Agent):
         self.KM = self.config.get("physics", {}).get("torque_coeff", 1.5e-9)
         self.G = 9.81
         self.MAX_RPM = config.get("physics", {}).get("max_rpm", 22000.0)
+        self.max_speed = config.get("physics", {}).get("max_spedd", 5)
         self.DRAG_COEFF = np.array([9.17e-7, 9.17e-7, 10.31e-7])
         
         self.ctrl = DSLPIDControl(drone_model=DroneModel.CF2X)
@@ -111,13 +116,16 @@ class UAV(Agent):
         self.swarm_pos = [] 
 
         # --- COMMUNICATION ---
-        self.com_period = 0.1 
+        com=self.config.get("communication")
+        self.com_period = com.get("com_period",0.1)
         self.last_com_time = -self.com_period
-        
+        self.message_buffer = []
+        self.perception_delay_mean = com.get("com_delay_mean",0.1)  # 100ms de retard
+        self.perception_delay_std = com.get("com_delay_std",0.02)  # +/- 20ms
         # --- SENSORS ---
-        sens = config.get("sensors", {})
-        self.ekf = EKF(dt); self.ekf.x[:3] = self.start_pos
-        self.gnss = GNSSensor(sens.get("gps", {}))
+        sens = self.config.get("sensors", {})
+        self.ekf = EKF(self.CTRL_DT); self.ekf.x[:3] = self.start_pos
+        self.gnss = GNSSensor(sens.get("gnss", {}))
         self.imu = IMUSensor(sens.get("imu", {}))
         self.lidar = LidarSensor(sens.get("lidar", {}))
         
@@ -125,9 +133,17 @@ class UAV(Agent):
         self.lidar_period = 1.0 / lidar_freq
         self.last_lidar_time = -self.lidar_period
         
-        self.gnss_FREQ = 10.0                # 10 Hz (Realistic Standard)
+        self.gnss_FREQ = sens.get("gnss", {}).get("frequency", 10.0)    # 10 Hz (Realistic Standard)
         self.gnss_DT = 1.0 / self.gnss_FREQ
         self.last_gnss_update_time = -self.gnss_DT
+        self.gnss_delay_mean= sens.get("gnss", {}).get("delay_mean", 0.1)
+        self.gnss_delay_std= sens.get("gnss", {}).get("delay_std", 0.01)
+        self.next_gnss_trigger = 0.0
+        #wind 
+        self.current_wind = np.zeros(3)
+        self.mean_wind = self.config.get("wind_mean",[0,0,0])
+        self.turbulence = self.config.get("turbulence",15)
+        self.wind_module = DrydenGustModel(self.dt,self.turbulence,self.mean_wind)
         # Logs
         self.logging_enabled = True
         self.log_file = os.path.join("logs", f"{self.name}.csv")
@@ -149,16 +165,16 @@ class UAV(Agent):
     # Obstacle management and path planning
     # ----------------------------------------------------------------------
     def _trigger_planning(self, start_pos, target_pos, obstacles):
-        if self.is_planning: return 
-        self.is_planning = True
-        print(f"[{self.name}] ⏳ Starting A* Thread...")
-        obs_copy = list(obstacles) 
-        self.planning_thread = threading.Thread(
+        if not self.is_planning:
+            self.is_planning = True
+            print(f"[{self.name}] ⏳ Starting A* Thread...")
+            obs_copy = list(obstacles) 
+            self.planning_thread = threading.Thread(
             target=self._run_async_plan, 
             args=(start_pos, target_pos, obs_copy)
-        )
-        self.planning_thread.daemon = True 
-        self.planning_thread.start()
+            )
+            self.planning_thread.daemon = True 
+            self.planning_thread.start()
 
     def _run_async_plan(self, start_pos, target_pos, obstacles):
         try:
@@ -182,18 +198,8 @@ class UAV(Agent):
             elif obstacle["type"] == "cylinder":
                 if point_in_cylinder(target_pos, obstacle): return "INVALID"
         
-        check_obs = obs if len(obs) < 2000 else obs[::2]
-        if len(check_obs) > 0:
-            vec_dir = target_pos - start_pos
-            dist_target = np.linalg.norm(vec_dir)
-            if dist_target > 0.1:
-                vec_dir /= dist_target
-                for pt in check_obs:
-                    pt_vec = np.array(pt) - start_pos
-                    proj = np.dot(pt_vec, vec_dir)
-                    if 0 < proj < dist_target:
-                        dist_ortho = np.linalg.norm(pt_vec - proj * vec_dir)
-                        if dist_ortho < 0.6: return "BLOCKED"
+        if p.raycast(start_pos,target_pos)[1][0]>= 0:
+            return "BLOCKED"
         return "CLEAR"
     
     def _compute_repulsive_force(self, current_pos, obstacles, safety_radius=1.0, max_force=1.0):
@@ -245,6 +251,50 @@ class UAV(Agent):
         }
         self.pub_socket.send_string("State " + json.dumps(msg))
 
+    def listen_swarm(self):
+        """
+        Vérifie la boite aux lettres et met à jour la liste des voisins.
+        À appeler à chaque step.
+        """
+        while True:
+            try:
+                # Lecture non-bloquante
+                msg = self.sub_socket.recv_string()
+                delay = max(0,random.gauss(self.perception_delay_mean, self.perception_delay_std))
+                visible_time = self._sim_time + delay
+                self.message_buffer.append((visible_time,msg))
+            except zmq.Again:
+                # Plus de messages
+                break
+            except Exception as e:
+                print(f"Erreur réseau sur {self.name}: {e}")
+                break
+            
+        buffer_remaining = []
+
+        for target_time, msg in self.message_buffer:
+            if self._sim_time >= target_time:
+                # --- LE MESSAGE EST PRÊT : ON LE TRAITE ---
+                if " " in msg:
+                    topic, json_str = msg.split(" ", 1)
+                    try:
+                        if topic == "SWARM":
+                            data = json.loads(json_str)
+                            for d_name, d_info in data.items():
+                                self.neighbors_data[d_name] = d_info
+                                if d_name != self.name and not self.leader:
+                                    self.swarm_pos.append(d_info["pos"])
+                        elif topic == "FUTURE_POS" and self.swarm_active and not self.leader:
+                            state = json.loads(json_str)
+                            self.future_state=state.get(self.name,None)
+                    except ValueError:
+                        pass
+            else:
+                buffer_remaining.append((target_time, msg))
+                # --- PAS ENCORE PRÊT : ON LE GARDE ---
+        # On remplace l'ancien buffer par ceux qui restent
+        self.message_buffer = buffer_remaining
+
     # ----------------------------------------------------------------------
     # MAIN LOOP & LOGIC
     # ----------------------------------------------------------------------
@@ -257,27 +307,32 @@ class UAV(Agent):
         
         # 1. Update Sim Time
         self._sim_time += self.dt
-        
+
+        #wind
+        gt = self.get_ground_truth_state()
+        h = gt["pos"][1]
+        V_airspeed = np.linalg.norm(gt["vel"] - self.current_wind)
+
+        self.current_wind = self.wind_module.step(h, V_airspeed)
         # 2. Logic Schedule (100 Hz)
         if (self._sim_time - self.last_ctrl_time) >= self.CTRL_DT:
-            self._update_control_loop()
+            self._update_control_loop(gt)
             self.last_ctrl_time = self._sim_time
-            
+        
         # 3. Physics Application (Always 240Hz)
         # Use the last calculated RPMs to maintain stability
-        gt = self.get_ground_truth_state()
         self._apply_lib_physics(self.last_rpms, gt)
         
         # Logging (Optional: Log at physics freq or control freq)
         if int(self._sim_time/self.dt) % 10 == 0:
-             self._log(gt["pos"])
+            self._log(gt["pos"])
 
-    def _update_control_loop(self):
+    def _update_control_loop(self,gt):
         """
         High-Level Logic Loop (100 Hz).
         Handles: Sensors, Communication, Planning, and PID Calculation.
         """
-        gt = self.get_ground_truth_state()
+        
         orn_q = np.array(gt["orn_q"])
         ang_vel = np.array(gt["ang_vel"])
         rpy = np.array(p.getEulerFromQuaternion(orn_q))
@@ -290,6 +345,31 @@ class UAV(Agent):
             self.ekf.update(meas_pos, meas_vel)
             self.last_gnss_update_time = self._sim_time
         
+        if self._sim_time >= self.next_gnss_trigger:
+            # 1. Mesure et Mise à jour EKF (inchangé)
+            meas_pos, meas_vel = self.gnss.measure(gt["pos"], gt["vel"])
+            self.ekf.update(meas_pos, meas_vel)
+    
+            # 2. Calcul du prochain temps de mise à jour
+            # On garde la base théorique stable (self.next_gnss_update_time + self.gnss_DT)
+            # Et on ajoute le bruit (jitter) juste pour le déclenchement
+    
+            # Exemple : +/- 10% de variation sur la période
+            jitter = max(0,random.gauss(self.gnss_delay_mean, self.gnss_delay_std))
+    
+            # IMPORTANT : On incrémente la cible théorique pour ne pas dériver
+            # Si on faisait juste self._sim_time + dt, on accumulerait le retard du bruit.
+            # Ici, on repart de l'heure prévue théorique précédente.
+    
+            # Si c'est la toute première fois ou pour réinitialiser la base théorique 
+            # MÉTHODE RECOMMANDÉE ET PLUS SIMPLE (Sans dérive long terme) :
+            # On met à jour last_gnss_update_time théorique
+            self.last_gnss_update_time += self.gnss_DT
+    
+            # Mais le prochain "check" se fera avec un décalage
+            self.next_gnss_trigger = self.last_gnss_update_time + jitter
+
+
         # Read the IMU (Acceleration + Orientation)
         # Note: In simple PyBullet, you can cheat and take gt['orn_q']
         # or use self.imu.measure(...) if your IMU sensor is complete.
@@ -297,8 +377,7 @@ class UAV(Agent):
         imu_acc, _ = self.imu.measure(gt["vel"], gt["orn_q"]) 
         # Note: Make sure your IMUSensor returns a np.array for imu_acc
         
-        # 2. EKF Prediction (Based on IMU!)
-        # This is where the magic happens: the EKF knows we're accelerating
+        # 2. EKF Prediction (Based on IMU)
         self.ekf.predict(imu_acc_body=imu_acc, orientation_quat=gt["orn_q"])
         
         # 3. EKF Correction (GPS)
@@ -322,24 +401,8 @@ class UAV(Agent):
                 self.broadcast_state(pos, vel)
 
         # Receive Messages
-        try: 
-            while True:
-                msg = self.sub_socket.recv_string()
-                if " " not in msg: continue
-                title, data_str = msg.split(" ", 1)
-
-                if title == "SWARM":
-                    incoming_data = json.loads(data_str)
-                    for d_name, d_info in incoming_data.items():
-                        self.neighbors_data[d_name] = d_info
-                        if d_name != self.name and not self.leader:
-                            self.swarm_pos.append(d_info["pos"])
-
-                elif title == "FUTURE_POS" and self.swarm_active and not self.leader:
-                    state = json.loads(data_str)
-                    self.future_state = state.get(self.name, None)
-        except zmq.Again:
-            pass
+        self.listen_swarm()
+        
 
         # Compile Obstacles
         self.total_obstacles = self.obstacles.copy()
@@ -351,7 +414,7 @@ class UAV(Agent):
         # --- TARGET LOGIC ---
         target_pos = pos 
         target_vel = np.zeros(3)
-
+        
         # 1. Swarm Follower
         if self.swarm_active and not self.leader:          
             target_pos = self.future_state["pos"]
@@ -361,7 +424,7 @@ class UAV(Agent):
         # 2. Planning (Wait)
         elif self.is_planning:
             target_pos = pos 
-            target_vel = -0.5 * vel # Brake
+            target_vel = -1 * vel # Brake
             
         # 3. Autonomous Navigation
         else:
@@ -378,7 +441,7 @@ class UAV(Agent):
             # Detect arrival at Waypoint
                 if self.wp_idx < len(self.waypoints):
                     dist_wp = np.linalg.norm(self.waypoints[self.wp_idx] - pos)
-                    if dist_wp < 0.3:
+                    if dist_wp < 0.3 and not self.is_planning:
                         print(f"[{self.name}] Waypoint {self.wp_idx} reached.")
                         self.wp_idx += 1
                         self.active_path = [] # Force a new calculation
@@ -391,11 +454,9 @@ class UAV(Agent):
                         # Force A* planning to trigger for each new WP
                         if self.replan_timer <= 0:
                             self._trigger_planning(pos, global_target, self.total_obstacles)
-                            self.replan_timer = 50 
+                            self.replan_timer = 100
                         break 
                     break
-
-
 
             # Follow Path
             if len(self.active_path) > 0:
@@ -425,10 +486,9 @@ class UAV(Agent):
         final_target_vel = target_vel + (acc_rep * 3 * self.CTRL_DT) # Use CTRL_DT here
 
         # Clamp Speed
-        max_speed_xy = 5.0 
         speed_xy = np.linalg.norm(final_target_vel[:2])
-        if speed_xy > max_speed_xy:
-            ratio = max_speed_xy / speed_xy
+        if speed_xy > self.max_speed:
+            ratio = self.max_speed / speed_xy
             final_target_vel[:2] *= ratio
         
         # PID Target Helper
@@ -459,7 +519,7 @@ class UAV(Agent):
         )
         
         self.last_rpms = rpms
-
+        
     def _apply_lib_physics(self, rpms, gt):
         rpms = np.clip(rpms, 0, self.MAX_RPM)
         forces = np.array(rpms**2) * self.KF
@@ -470,11 +530,14 @@ class UAV(Agent):
             p.applyExternalForce(self.bodyId, i, forceObj=[0, 0, forces[i]], posObj=[0, 0, 0], flags=p.LINK_FRAME, physicsClientId=self.physics_client_id)
         
         try:
-            p.applyExternalTorque(self.bodyId, 4, torqueObj=[0, 0, z_torque], flags=p.LINK_FRAME, physicsClientId=self.physics_client_id)
+            p.applyExternalTorque(self.bodyId, 4, [0, 0, z_torque], p.LINK_FRAME)
             rot = np.array(p.getMatrixFromQuaternion(gt["orn_q"])).reshape(3,3)
-            drag = -1 * self.DRAG_COEFF * np.sum(2 * np.pi * rpms / 60)
-            f_drag = rot @ (drag * (rot.T @ gt["vel"]))
-            p.applyExternalForce(self.bodyId, 4, forceObj=f_drag, posObj=[0,0,0], flags=p.LINK_FRAME, physicsClientId=self.physics_client_id)
+            v_air_world = gt["vel"] - self.current_wind
+            v_air_body = rot.T @ v_air_world
+            prop_wash_factor = np.sum(2 * np.pi * rpms / 60)
+            drag_force_body = -1 * self.DRAG_COEFF * prop_wash_factor * v_air_body
+            f_drag_for_bullet = rot @ drag_force_body 
+            p.applyExternalForce(self.bodyId, -1, forceObj=f_drag_for_bullet, posObj=[0,0,0], flags=p.LINK_FRAME, physicsClientId=self.physics_client_id)
         except:
             pass 
 
@@ -482,3 +545,4 @@ class UAV(Agent):
         if int(self._sim_time/self.dt)%10==0:
             with open(self.log_file, "a", newline="") as f:
                 csv.writer(f).writerow([round(self._sim_time,3), *pos])
+
