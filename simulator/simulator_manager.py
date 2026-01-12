@@ -8,7 +8,6 @@ from environment.world import World
 from entities.uav import UAV
 from swarm.swarm import Swarm
 from entities.static_sensor import RadarStation
-from environment.world import generate_city_urdf
 from Control.Path_planning import HeightmapAStar 
 
 class SimulationManager:
@@ -24,7 +23,6 @@ class SimulationManager:
     def __init__(self, config: dict):
         self.config = config
         self.dt = float(self.config["simulation"]["dt"])
-
         # 1. Connexion PyBullet
         mode_str = str(self.config["simulation"]["connect_mode"]).strip().lower()
         mode = p.GUI if mode_str == "gui" else p.DIRECT
@@ -42,8 +40,7 @@ class SimulationManager:
 
         # 2. Monde (sol + obstacles)
         self.world = World(self.physics_client_id)
-        self.world.load_basic_environment()
-        
+
         if mode == p.GUI:
             p.resetDebugVisualizerCamera(
                 cameraDistance=6.0,
@@ -78,7 +75,7 @@ class SimulationManager:
         res=self.obstacles_config.get("res",0.25)
 
         """Charge le sol + règle la physique."""
-        obstacles=generate_city_urdf(self.obstacles_config.get("city",{}),res)
+        obstacles=self.world.generate_city_urdf(self.obstacles_config.get("city",{}))
 
         p.loadURDF(
             "assets/city.urdf",  # <--- Votre nouveau fichier
