@@ -6,9 +6,10 @@ import pybullet_data
 
 from environment.world import World
 from entities.uav import UAV
-from entities.obstacles import CubeObstacle, SphericalObstacle, CylindricalObstacle
 from swarm.swarm import Swarm
 from entities.static_sensor import RadarStation
+from environment.world import generate_city_urdf
+from Control.Path_planning import HeightmapAStar 
 
 class SimulationManager:
     """
@@ -42,7 +43,7 @@ class SimulationManager:
         # 2. Monde (sol + obstacles)
         self.world = World(self.physics_client_id)
         self.world.load_basic_environment()
-
+        
         if mode == p.GUI:
             p.resetDebugVisualizerCamera(
                 cameraDistance=6.0,
@@ -70,40 +71,26 @@ class SimulationManager:
     # ------------------------------------------------------------------
     def load_scenario(self):
         print("Chargement du scénario...")
-        known_obstacles_agent = []
-        self.known_obstacles_config = self.config.get("world", {}).get("obstacles", [])
+        
+        self.obstacles_config = self.config.get("world", {})
+        print(self.obstacles_config)
         # Obstacles
-        for obs_cfg in self.known_obstacles_config:
-            otype = obs_cfg.get("type")
-            if otype == "cube":
-                obstacle = CubeObstacle(
-                    center=obs_cfg["center"],
-                    length=obs_cfg["length"],
-                    width=obs_cfg["width"],
-                    height=obs_cfg["height"],
-                    obstacle_id=obs_cfg["id"]
-                )
-                self.world.add_cube_obstacle(obstacle)
+        res=self.obstacles_config.get("res",0.25)
 
-            elif otype == "sphere":
-                obstacle = SphericalObstacle(
-                    center=obs_cfg["center"],
-                    radius=obs_cfg["radius"],
-                    obstacle_id=obs_cfg["id"]
-                )
-                self.world.add_sphere_obstacle(obstacle)
+        """Charge le sol + règle la physique."""
+        obstacles=generate_city_urdf(self.obstacles_config.get("city",{}),res)
 
-            elif otype == "cylinder":
-                obstacle = CylindricalObstacle(
-                    center=obs_cfg["center"],
-                    radius=obs_cfg["radius"],
-                    height=obs_cfg["height"],
-                    obstacle_id=obs_cfg["id"]
-                )
-                self.world.add_cylindrical_obstacle(obstacle)
-        for obs in self.known_obstacles_config :
-            if obs.get("knowledge", False) == True :
-                known_obstacles_agent.append(obs)
+        p.loadURDF(
+            "assets/city.urdf",  # <--- Votre nouveau fichier
+            basePosition=[0, 0, 0],
+            useFixedBase=1,
+            physicsClientId=self.physics_client_id,
+        )
+        self.planner = HeightmapAStar(
+            self.obstacles_config.get("Astar",{}),
+            resolution=res, 
+        )
+        self.planner.build_from_buildings(obstacles)
         # Drones
         for agent_cfg in self.config.get("agents", []):
             if agent_cfg.get("type") == "uav":
@@ -111,7 +98,8 @@ class SimulationManager:
                     config=agent_cfg,
                     physics_client_id=self.physics_client_id,
                     dt=self.dt,
-                    known_obstacles_config=known_obstacles_agent,
+                    known_obstacles_config=obstacles,
+                    planner=self.planner
                 )
                 self.agents.append(uav)
 
@@ -245,3 +233,5 @@ class SimulationManager:
             p.disconnect(self.physics_client_id)
             for swarm in self.swarms:
                 swarm.cleanup()
+
+    

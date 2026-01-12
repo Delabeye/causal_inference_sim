@@ -12,15 +12,12 @@ from utilities.utilities import point_in_cube, point_in_cylinder, discretize_obs
 from entities.agent import Agent
 from entities.sensor import GNSSensor, IMUSensor, LidarSensor
 from Control.EKF import EKF
-from Control.Path_planning import AStarPlanner
 from environment.wind import DrydenGustModel
-
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.utils.enums import DroneModel
 
-
 class UAV(Agent):
-    def __init__(self, config: dict, physics_client_id: int, dt: float, known_obstacles_config: list[dict]):
+    def __init__(self, config: dict, physics_client_id: int, dt: float, known_obstacles_config: dict,planner):
         """
         Initialize a UAV entity with physics simulation, control systems, and autonomous capabilities.
         Args:
@@ -90,13 +87,11 @@ class UAV(Agent):
         
         # --- OBSTACLES & PLANNING ---
         self.obs_dic = known_obstacles_config
-        self.known_obstacles = discretize_obstacles(known_obstacles_config)
-        self.obstacles = self.known_obstacles.copy()
+        self.obstacles = []
         self.total_obstacles = [] # Combined list for avoidance
-        print(len(self.known_obstacles), "known obstacle points loaded.")
-        
-        a_config = {"world_bounds": {"x": [-10, 10], "y": [-10, 10], "z": [0.1, 5.0]}}
-        self.planner = AStarPlanner(self.config.get("astar", a_config))
+        print(len(self.obs_dic), "known obstacle points loaded.")
+
+        self.planner = planner
         
         self.target_yaw_cache = 0.0
         
@@ -171,14 +166,14 @@ class UAV(Agent):
             obs_copy = list(obstacles) 
             self.planning_thread = threading.Thread(
             target=self._run_async_plan, 
-            args=(start_pos, target_pos, obs_copy)
+            args=(start_pos, target_pos)
             )
             self.planning_thread.daemon = True 
             self.planning_thread.start()
 
-    def _run_async_plan(self, start_pos, target_pos, obstacles):
+    def _run_async_plan(self, start_pos, target_pos):
         try:
-            path = self.planner.plan(start_pos, target_pos, obstacles, smooth=True)
+            path = self.planner.plan(start_pos, target_pos)
             if path and len(path) > 0:
                 self.active_path = path 
                 self.Calculation_fail_count = 0
@@ -189,36 +184,66 @@ class UAV(Agent):
         finally:
             self.is_planning = False 
 
-    def _analyze_target_accessibility(self, start_pos, target_pos, obs):
+    def _analyze_target_accessibility(self, start_pos, target_pos):
         for obstacle in self.obs_dic:
-            if obstacle["type"] == "cube":
                 if point_in_cube(target_pos, obstacle): return "INVALID"
-            elif obstacle["type"] == "sphere":
-                if np.linalg.norm(np.array(target_pos) - np.array(obstacle["center"])) <= obstacle["radius"]: return "INVALID"
-            elif obstacle["type"] == "cylinder":
-                if point_in_cylinder(target_pos, obstacle): return "INVALID"
-        
         if p.raycast(start_pos,target_pos)[1][0]>= 0:
             return "BLOCKED"
         return "CLEAR"
     
-    def _compute_repulsive_force(self, current_pos, obstacles, safety_radius=1.0, max_force=1.0):
+    # Dans causal_inference_sim/entities/uav.py
+
+    def _compute_repulsive_force(self, current_pos, safety_radius=1.5, max_force=1.5):
         force_vec = np.array([0.0, 0.0, 0.0])
-        if not obstacles: return force_vec
+    
+        # On vérifie que le planner et son index sont prêts
+        if self.planner.building_tree is None:
+            return force_vec
 
-        obs_to_check = obstacles[::5] if len(obstacles) > 500 else obstacles
-        for obs in obs_to_check:
-            diff_vec = current_pos - np.array(obs)
-            diff_vec[2] = 0.0 # Ignore Z
-            dist = np.linalg.norm(diff_vec)
-            if 0.05 < dist < safety_radius:
-                coef = (1.0 - (dist / safety_radius))
-                repulsion = diff_vec / dist * coef * max_force
-                force_vec += repulsion
-
+    # 1. Trouver les indices des bâtiments proches (ex: rayon 15m)
+        indices = self.planner.building_tree.query_ball_point(current_pos[:2], r=15.0)
+    
+        for idx in indices:
+            # 2. Correction de l'erreur : accès direct par l'index à la liste
+            obs = self.obs_dic[idx] 
+        
+            center = np.array(obs["center"])
+            h, w, l = obs["height"], obs["width"], obs["length"]
+        
+            # Ignorer si le drone est nettement au-dessus du bâtiment
+            if current_pos[2] > h + 1.0: 
+                continue
+            
+            # 3. Calcul sur les 5 points critiques (coins + centre)
+            dx, dy = l / 2, w / 2
+            critical_points = [
+            center[:2],
+            center[:2] + np.array([dx, dy]),
+            center[:2] + np.array([dx, -dy]),
+            center[:2] + np.array([-dx, dy]),
+            center[:2] + np.array([-dx, -dy])
+            ]
+        
+            for pt_xy in critical_points:
+                diff = current_pos[:2] - pt_xy
+                dist = np.linalg.norm(diff)
+            
+                if 0.05 < dist < safety_radius:
+                    mag = (1.0 - (dist / safety_radius))
+                    force_vec[:2] += (diff / dist) * mag * max_force
+            if self.swarm_active and not self.leader:
+                for other_pos in self.swarm_pos:
+                    diff = current_pos - other_pos
+                    dist = np.linalg.norm(diff)
+                    if 0.05 < dist < safety_radius:
+                        mag = (1.0 - (dist / safety_radius))
+                        force_vec += (diff / dist) * mag * max_force
+                
+        # Normalisation finale
         total_norm = np.linalg.norm(force_vec)
         if total_norm > max_force:
             force_vec = (force_vec / total_norm) * max_force
+        
         return force_vec
     
     # ----------------------------------------------------------------------
@@ -310,7 +335,7 @@ class UAV(Agent):
 
         #wind
         gt = self.get_ground_truth_state()
-        h = gt["pos"][1]
+        h = gt["pos"][2]
         V_airspeed = np.linalg.norm(gt["vel"] - self.current_wind)
 
         self.current_wind = self.wind_module.step(h, V_airspeed)
@@ -385,8 +410,8 @@ class UAV(Agent):
         pos = self.ekf.x[:3]
         vel = self.ekf.x[3:6]
         # Reset known obstacles periodically
-        if self._sim_time > 0 and (self._sim_time % 10) < self.dt:
-            self.obstacles = self.known_obstacles.copy()
+        #if self._sim_time > 0 and (self._sim_time % 10) < self.dt:
+        #    self.obstacles = self.known_obstacles.copy()
 
         # --- SENSORS (Lidar) ---
         if (self._sim_time - self.last_lidar_time) >= self.lidar_period:
@@ -403,7 +428,6 @@ class UAV(Agent):
         # Receive Messages
         self.listen_swarm()
         
-
         # Compile Obstacles
         self.total_obstacles = self.obstacles.copy()
         if self.swarm_active and not self.leader:
@@ -479,7 +503,7 @@ class UAV(Agent):
 
         # --- CONTROL COMMANDS ---
         # Repulsive Force
-        F_rep = self._compute_repulsive_force(pos, self.total_obstacles, safety_radius=0.45, max_force=0.75)    
+        F_rep = self._compute_repulsive_force(pos, safety_radius=0.45, max_force=0.75)    
         drone_mass = self.config.get("mass", 0.03) 
         acc_rep = F_rep / drone_mass
         
