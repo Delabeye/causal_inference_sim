@@ -8,7 +8,7 @@ import json
 import random
 
 # Utility Imports & Control
-from utilities.utilities import point_in_cube, point_in_cylinder, discretize_obstacles
+from utilities.utilities import point_in_cube
 from entities.agent import Agent
 from entities.sensor import GNSSensor, IMUSensor, LidarSensor
 from Control.EKF import EKF
@@ -17,36 +17,56 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.utils.enums import DroneModel
 
 class UAV(Agent):
-    def __init__(self, config: dict, physics_client_id: int, dt: float, known_obstacles_config: dict,planner):
+    
+    def __init__(self, config: dict, physics_client_id: int, dt: float, known_obstacles_config: dict,planner,world_type: str):
         """
         Initialize a UAV entity with physics simulation, control systems, and autonomous capabilities.
+        
         Args:
             config (dict): Configuration dictionary containing:
-                - name (str): UAV identifier. Defaults to "UAV".
-                - body_id (int): Physics body ID. Defaults to 0000.
-                - mass (float): UAV mass in kg. Defaults to 1.5.
-                - urdf_path (str): Path to URDF model file. Defaults to "assets/quadrotor.urdf".
-                - start_pos (list): Initial position [x, y, z]. Defaults to [0, 0, 1.0].
-                - start_orn_euler (list): Initial orientation in Euler angles. Defaults to [0, 0, 0].
-                - waypoints (list): List of waypoint coordinates. Defaults to [[0, 0, 1]].
-                - ctrl_freq (int): Control loop frequency in Hz. Defaults to 100.
-                - wind_mean (list): Mean wind vector [x, y, z]. Defaults to [0, 0, 0].
-                - turbulence (float): Dryden gust model turbulence level. Defaults to 15.
-                - astar (dict): A* planner configuration with world bounds.
-                - communication (dict): Network communication settings (com_period, com_delay_mean, com_delay_std).
-                - sensors (dict): Sensor configurations for GNSS, IMU, and Lidar.
-                - physics (dict): Physics parameters (thrust_coeff, torque_coeff, max_rpm, max_speed).
+            - name (str): UAV identifier. Defaults to "UAV".
+            - body_id (int): Physics body ID. Defaults to 0000.
+            - mass (float): UAV mass in kg. Defaults to 1.5.
+            - urdf_path (str): Path to URDF model file. Defaults to "assets/quadrotor.urdf".
+            - start_pos (list): Initial position [x, y, z]. Defaults to [0, 0, 1.0].
+            - start_orn_euler (list): Initial orientation in Euler angles [roll, pitch, yaw]. Defaults to [0, 0, 0].
+            - waypoints (list[list]): List of waypoint coordinates [[x, y, z], ...]. Defaults to [[0, 0, 1]].
+            - ctrl_freq (int): Control loop frequency in Hz. Defaults to 100.
+            - wind_mean (list): Mean wind vector [x, y, z] in m/s. Defaults to [0, 0, 0].
+            - turbulence (float): Dryden gust model turbulence intensity (0-20). Defaults to 15.
+            - communication (dict): Network settings with keys:
+                - com_period (float): Broadcast interval in seconds. Defaults to 0.1.
+                - com_delay_mean (float): Mean communication latency. Defaults to 0.1.
+                - com_delay_std (float): Std dev of communication latency. Defaults to 0.02.
+            - sensors (dict): Sensor configurations with keys:
+                - gnss (dict): GNSS sensor settings (frequency, delay_mean, delay_std).
+                - imu (dict): IMU sensor settings (noise parameters).
+                - lidar (dict): Lidar sensor settings (frequency, range, noise).
+            - physics (dict): Physics parameters:
+                - thrust_coeff (float): Thrust coefficient KF. Defaults to 6.11e-8.
+                - torque_coeff (float): Torque coefficient KM. Defaults to 1.5e-9.
+                - max_rpm (float): Maximum rotor RPM. Defaults to 22000.
+                - max_speed (float): Maximum velocity in m/s. Defaults to 5.
             physics_client_id (int): PyBullet physics client identifier.
-            dt (float): Physics simulation timestep in seconds.
-            known_obstacles_config (list[dict]): Configuration list for known static obstacles.
+            dt (float): Physics simulation timestep in seconds (typically 1/240).
+            known_obstacles_config (list[dict]): Configuration list for static obstacles with keys:
+            - center (list): [x, y, z] center position.
+            - height, width, length (float): Obstacle dimensions.
+            planner: A* path planner instance with planning interface.
+        
         Initializes:
-            - Physics engine connection and body properties
-            - Control system (DSL PID controller at configurable frequency, default 100Hz)
-            - Navigation system with waypoint planning and A* path planner
-            - Sensor suite (EKF, GNSS, IMU, Lidar)
-            - Swarm coordination parameters and communication infrastructure
-            - Wind and turbulence simulation (Dryden Gust Model)
-            - Logging system for trajectory tracking
+            - Physics engine: Body properties, dynamics, external force/torque application.
+            - Control system: DSL PID controller running at configurable frequency (default 100Hz).
+            - Navigation: Waypoint management and A* path planning with async thread support.
+            - Sensor fusion: EKF (Extended Kalman Filter) with GNSS, IMU, and Lidar.
+            - Obstacle avoidance: Repulsive force computation and collision detection.
+            - Swarm coordination: Leader-follower formation control and neighbor tracking.
+            - Communication: ZMQ-based state broadcasting and swarm message handling.
+            - Wind simulation: Dryden Gust Model for realistic turbulence.
+            - Logging: CSV trajectory tracking (simulation time, position).
+        
+        Note:
+            Physics loop runs at 240Hz; logic/control loop runs at configurable frequency (100Hz default).
         """
         self.config = config
         self.dt = float(dt)
@@ -86,15 +106,17 @@ class UAV(Agent):
         self.wp_idx = 0
         
         # --- OBSTACLES & PLANNING ---
-        self.obs_dic = known_obstacles_config
-        self.obstacles = []
-        self.total_obstacles = [] # Combined list for avoidance
+        self.obs_dic = known_obstacles_config # Combined list for avoidance
         print(len(self.obs_dic), "known obstacle points loaded.")
-
+        self.environment = world_type
+        
         self.planner = planner
         
         self.target_yaw_cache = 0.0
         
+        self.max_repulsive_force = self.config.get("physics",{}).get("max_repulsive_force",2.0)
+        self.safety_radius = self.config.get("physics",{}).get("safety_radius",2.0)
+
         # Planning States
         self.active_path = []
         self.is_planning = False      
@@ -102,14 +124,20 @@ class UAV(Agent):
         self.replan_timer = 0         
         self.Calculation_fail_count = 0
 
+        self.zmq_ctx = zmq.Context()
+        self.sub_socket = None
+        self.pub_socket = None
+        self.radar_sub_socket = None 
+
         # --- SWARM CONTROL ---
         self.swarm_active = False
         self.swarm_target_pos = None
         self.swarm_target_vel = None
         self.swarm_target_yaw = None 
         self.leader = False
-        self.swarm_pos = [] 
-
+        self.other_agent_pos = {}
+        self.neighbors_data = {} 
+        self.swarm_name=[]
         # --- COMMUNICATION ---
         com=self.config.get("communication")
         self.com_period = com.get("com_period",0.1)
@@ -139,13 +167,18 @@ class UAV(Agent):
         self.mean_wind = self.config.get("wind_mean",[0,0,0])
         self.turbulence = self.config.get("turbulence",15)
         self.wind_module = DrydenGustModel(self.dt,self.turbulence,self.mean_wind)
+        # radar 
+        radar_list = self.config.get("radar", None)
+        if radar_list:
+            self.radar_com_setup(radar_list)
         # Logs
         self.logging_enabled = True
         self.log_file = os.path.join("logs", f"{self.name}.csv")
         os.makedirs("logs", exist_ok=True)
         if os.path.exists(self.log_file): os.remove(self.log_file)
         
-        self.broadcast_state(pos=self.start_pos, vel=[0,0,0])
+        if self.pub_socket is not None:
+            self.broadcast_state(pos=self.start_pos, vel=[0,0,0])
         p.changeDynamics(self.bodyId, -1, linearDamping=0, angularDamping=0)
 
     # ----------------------------------------------------------------------
@@ -154,16 +187,14 @@ class UAV(Agent):
     def set_swarm_activate(self):
         self.swarm_active = True
         self.future_state = {"pos": np.array(self.start_pos), "vel": np.zeros(3), "yaw": 0.0}
-        self.swarm_pos = []
 
     # ----------------------------------------------------------------------
     # Obstacle management and path planning
     # ----------------------------------------------------------------------
-    def _trigger_planning(self, start_pos, target_pos, obstacles):
+    def _trigger_planning(self, start_pos, target_pos):
         if not self.is_planning:
             self.is_planning = True
             print(f"[{self.name}] ⏳ Starting A* Thread...")
-            obs_copy = list(obstacles) 
             self.planning_thread = threading.Thread(
             target=self._run_async_plan, 
             args=(start_pos, target_pos)
@@ -193,75 +224,109 @@ class UAV(Agent):
     
     # Dans causal_inference_sim/entities/uav.py
 
-    def _compute_repulsive_force(self, current_pos, safety_radius=1.5, max_force=1.5):
+    def _compute_repulsive_force(self, current_pos):
         force_vec = np.array([0.0, 0.0, 0.0])
-    
+
+        if self.other_agent_pos != {}:
+            for _,other_pos in self.other_agent_pos.items():
+                diff = current_pos - other_pos
+                dist_uav = np.linalg.norm(diff)
+                if dist_uav < self.safety_radius:
+                    mag = (1.0 - (dist_uav / self.safety_radius))
+                    force_vec += ((diff / dist_uav) * mag * self.max_repulsive_force)/2
+
         # On vérifie que le planner et son index sont prêts
         if self.planner.building_tree is None:
+            total_norm = np.linalg.norm(force_vec)
+            if total_norm > self.max_repulsive_force:
+                force_vec = (force_vec / total_norm) * self.max_repulsive_force
             return force_vec
 
     # 1. Trouver les indices des bâtiments proches (ex: rayon 15m)
         indices = self.planner.building_tree.query_ball_point(current_pos[:2], r=15.0)
     
         for idx in indices:
-            # 2. Correction de l'erreur : accès direct par l'index à la liste
             obs = self.obs_dic[idx] 
-        
             center = np.array(obs["center"])
             h, w, l = obs["height"], obs["width"], obs["length"]
         
-            # Ignorer si le drone est nettement au-dessus du bâtiment
             if current_pos[2] > h + 1.0: 
                 continue
-            
-            # 3. Calcul sur les 5 points critiques (coins + centre)
-            dx, dy = l / 2, w / 2
-            critical_points = [
-            center[:2],
-            center[:2] + np.array([dx, dy]),
-            center[:2] + np.array([dx, -dy]),
-            center[:2] + np.array([-dx, dy]),
-            center[:2] + np.array([-dx, -dy])
-            ]
-        
-            for pt_xy in critical_points:
-                diff = current_pos[:2] - pt_xy
-                dist = np.linalg.norm(diff)
-            
-                if 0.05 < dist < safety_radius:
-                    mag = (1.0 - (dist / safety_radius))
-                    force_vec[:2] += (diff / dist) * mag * max_force
-            if self.swarm_active and not self.leader:
-                for other_pos in self.swarm_pos:
-                    diff = current_pos - other_pos
-                    dist = np.linalg.norm(diff)
-                    if 0.05 < dist < safety_radius:
-                        mag = (1.0 - (dist / safety_radius))
-                        force_vec += (diff / dist) * mag * max_force
-                
+
+            # 1. Définir les limites du rectangle (AABB)
+            min_x = center[0] - l / 2
+            max_x = center[0] + l / 2
+            min_y = center[1] - w / 2
+            max_y = center[1] + w / 2
+
+            # 2. Trouver le point le plus proche sur ou dans le rectangle
+            # On "clappe" la position du drone entre les bornes du bâtiment
+            closest_x = max(min_x, min(current_pos[0], max_x))
+            closest_y = max(min_y, min(current_pos[1], max_y))
+            closest_pt = np.array([closest_x, closest_y])
+
+            # 3. Calculer le vecteur de distance
+            diff = current_pos[:2] - closest_pt
+            dist = np.linalg.norm(diff)
+
+            # Cas particulier : si le drone est pile à l'intérieur (dist ~ 0)
+            # on crée une force pour le repousser vers l'extérieur
+            if dist < 0.01:
+                # On peut ignorer ou repousser vers le bord le plus proche
+                continue
+
+            # 4. Appliquer la force repulsive
+            if dist < self.safety_radius:
+                mag = (1.0 - (dist / self.safety_radius))
+                # Le vecteur (diff / dist) est maintenant toujours perpendiculaire au mur
+                force_vec[:2] += (diff / dist) * mag * self.max_repulsive_force
+
         # Normalisation finale
         total_norm = np.linalg.norm(force_vec)
-        if total_norm > max_force:
-            force_vec = (force_vec / total_norm) * max_force
-        
+        if total_norm > self.max_repulsive_force:
+            force_vec = (force_vec / total_norm) * self.max_repulsive_force
+
         return force_vec
     
     # ----------------------------------------------------------------------
     # COMMUNICATION
     # ----------------------------------------------------------------------
-    def setup_network(self, ip, port_pub, port_sub):
-        self.zmq_ctx = zmq.Context()
+    def setup_network_swarm(self, ip, port_pub_swarm, port_sub_swarm):
+
         self.sub_socket = self.zmq_ctx.socket(zmq.SUB)
-        self.sub_socket.connect(f"tcp://{ip}:{port_sub}")
+        self.sub_socket.connect(f"tcp://{ip}:{port_sub_swarm}")
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "") 
         self.sub_socket.setsockopt(zmq.RCVTIMEO, 1) 
         try: self.sub_socket.setsockopt(zmq.CONFLATE, 1)
         except zmq.Error: pass
         
         self.pub_socket = self.zmq_ctx.socket(zmq.PUB)
-        self.pub_socket.connect(f"tcp://{ip}:{port_pub}")
+        self.pub_socket.connect(f"tcp://{ip}:{port_pub_swarm}")
         self.pub_socket.setsockopt_string(zmq.IDENTITY, self.name)
-        self.neighbors_data = {} 
+
+
+    def radar_com_setup(self, radars_list):
+
+        self.radar_sub_socket = self.zmq_ctx.socket(zmq.SUB)
+        self.radar_sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.radar_sub_socket.setsockopt(zmq.RCVTIMEO, 1)
+        
+        try:
+            self.radar_sub_socket.setsockopt(zmq.CONFLATE, 1)
+        except zmq.Error:
+            pass
+
+        for radar_info in radars_list:
+            # On récupère les infos depuis le dictionnaire du config.yaml
+            ip = radar_info.get('ip', 'localhost')
+            port = radar_info.get('port')
+            
+            if port:
+                address = f"tcp://{ip}:{port}"
+                print(f"[{self.name}] Connexion au radar défini dans config : {address}")
+                self.radar_sub_socket.connect(address)
+            else:
+                print(f"[{self.name}] ⚠️ Erreur : Port du radar non spécifié dans la config.")
         
     def broadcast_state(self, pos, vel):
         if not hasattr(self, "pub_socket"): return 
@@ -275,6 +340,47 @@ class UAV(Agent):
             "sim_time": round(self._sim_time, 3)
         }
         self.pub_socket.send_string("State " + json.dumps(msg))
+
+    def listen_radar(self):
+        while True:
+            try:
+                # Lecture non-bloquante
+                msg = self.radar_sub_socket.recv_string()
+                delay = max(0,random.gauss(self.perception_delay_mean, self.perception_delay_std))
+                visible_time = self._sim_time + delay
+                self.message_buffer.append((visible_time,msg))
+            except zmq.Again:
+                # Plus de messages
+                break
+            except Exception as e:
+                print(f"Erreur réseau sur {self.name}: {e}")
+                break
+            
+        buffer_remaining = []
+
+        for target_time, msg in self.message_buffer:
+            if self._sim_time >= target_time:
+                # --- LE MESSAGE EST PRÊT : ON LE TRAITE ---
+                if " " in msg:
+                    _, json_str = msg.split(" ", 1)
+                    try:
+                        data = json.loads(json_str)
+                        radar_data = data.get("data",{})
+                        for d_name, d_info in radar_data.items():
+                            self.neighbors_data[d_name] = d_info
+                            if d_name != self.name and not self.leader:
+                                if d_name in self.swarm_name:
+                                    pos = d_info["pos"]
+                                    self.other_agent_pos[d_name] = np.array(pos)
+                            if d_name == self.name: 
+                                self.radar_reports = d_info
+                    except ValueError:
+                        pass
+            else:
+                buffer_remaining.append((target_time, msg))
+                # --- PAS ENCORE PRÊT : ON LE GARDE ---
+        # On remplace l'ancien buffer par ceux qui restent
+        self.message_buffer = buffer_remaining
 
     def listen_swarm(self):
         """
@@ -308,7 +414,8 @@ class UAV(Agent):
                             for d_name, d_info in data.items():
                                 self.neighbors_data[d_name] = d_info
                                 if d_name != self.name and not self.leader:
-                                    self.swarm_pos.append(d_info["pos"])
+                                    pos = d_info["pos"]
+                                    self.other_agent_pos[d_name] = np.array(pos)
                         elif topic == "FUTURE_POS" and self.swarm_active and not self.leader:
                             state = json.loads(json_str)
                             self.future_state=state.get(self.name,None)
@@ -343,7 +450,6 @@ class UAV(Agent):
         if (self._sim_time - self.last_ctrl_time) >= self.CTRL_DT:
             self._update_control_loop(gt)
             self.last_ctrl_time = self._sim_time
-        
         # 3. Physics Application (Always 240Hz)
         # Use the last calculated RPMs to maintain stability
         self._apply_lib_physics(self.last_rpms, gt)
@@ -410,8 +516,6 @@ class UAV(Agent):
         pos = self.ekf.x[:3]
         vel = self.ekf.x[3:6]
         # Reset known obstacles periodically
-        #if self._sim_time > 0 and (self._sim_time % 10) < self.dt:
-        #    self.obstacles = self.known_obstacles.copy()
 
         # --- SENSORS (Lidar) ---
         if (self._sim_time - self.last_lidar_time) >= self.lidar_period:
@@ -426,14 +530,10 @@ class UAV(Agent):
                 self.broadcast_state(pos, vel)
 
         # Receive Messages
-        self.listen_swarm()
-        
-        # Compile Obstacles
-        self.total_obstacles = self.obstacles.copy()
-        if self.swarm_active and not self.leader:
-            for other_pos in self.swarm_pos:
-                self.total_obstacles.append(np.round(other_pos, 2))
-            self.swarm_pos = []
+        if self.sub_socket is not None : 
+            self.listen_swarm()
+        if self.radar_sub_socket is not None: 
+            self.listen_radar()
 
         # --- TARGET LOGIC ---
         target_pos = pos 
@@ -465,7 +565,7 @@ class UAV(Agent):
             # Detect arrival at Waypoint
                 if self.wp_idx < len(self.waypoints):
                     dist_wp = np.linalg.norm(self.waypoints[self.wp_idx] - pos)
-                    if dist_wp < 0.3 and not self.is_planning:
+                    if dist_wp < 0.5 and not self.is_planning:
                         print(f"[{self.name}] Waypoint {self.wp_idx} reached.")
                         self.wp_idx += 1
                         self.active_path = [] # Force a new calculation
@@ -477,7 +577,7 @@ class UAV(Agent):
                     if len(self.active_path) == 0:
                         # Force A* planning to trigger for each new WP
                         if self.replan_timer <= 0:
-                            self._trigger_planning(pos, global_target, self.total_obstacles)
+                            self._trigger_planning(pos, global_target)
                             self.replan_timer = 100
                         break 
                     break
@@ -485,7 +585,7 @@ class UAV(Agent):
             # Follow Path
             if len(self.active_path) > 0:
                 local_target = self.active_path[0]
-                if np.linalg.norm(local_target - pos) < 0.4:
+                if np.linalg.norm(local_target - pos) < 0.7:
                     self.active_path.pop(0)
                     if len(self.active_path) > 0:
                         local_target = self.active_path[0]
@@ -495,7 +595,7 @@ class UAV(Agent):
                 
             elif self.wp_idx < len(self.waypoints):
                 target_pos = self.waypoints[self.wp_idx]
-                if np.linalg.norm(target_pos - pos) < 0.2:
+                if np.linalg.norm(target_pos - pos) < 0.3:
                     print(f"[{self.name}] WP {self.wp_idx} Reached.")
                     self.wp_idx += 1
 
@@ -503,10 +603,13 @@ class UAV(Agent):
 
         # --- CONTROL COMMANDS ---
         # Repulsive Force
-        F_rep = self._compute_repulsive_force(pos, safety_radius=0.45, max_force=0.75)    
-        drone_mass = self.config.get("mass", 0.03) 
-        acc_rep = F_rep / drone_mass
+        if self.environment == "generated":
+            F_rep = self._compute_repulsive_force(pos)    
+        if self.environment == "custom":
+            F_rep= self.planner.compute_repulsive_force(pos,self.safety_radius,self.max_repulsive_force,self.swarm_active,self.leader,self.other_agent_pos)
         
+        acc_rep = F_rep / self.mass
+
         final_target_vel = target_vel + (acc_rep * 3 * self.CTRL_DT) # Use CTRL_DT here
 
         # Clamp Speed
@@ -519,7 +622,7 @@ class UAV(Agent):
         final_target_pos = target_pos + (final_target_vel * self.CTRL_DT)
         vector_to_target = final_target_pos - pos
         dist_to_target = np.linalg.norm(vector_to_target)
-        if dist_to_target > 1.0:
+        if dist_to_target > 3:
             virtual_target_pos = pos + (vector_to_target / dist_to_target) * 1.0
         else:
             virtual_target_pos = final_target_pos

@@ -45,6 +45,7 @@ class Swarm:
         self.perception_delay_mean = 0.1  # 100ms de retard
         self.perception_delay_std = 0.02  # +/- 20ms
         self.message_buffer = []
+        agents_names = [a.name for a in agents if a.type == "uav"]
         # Choix du leader
         if leader_name is not None:
             leader_list = [a for a in agents if getattr(a, "name", "") == leader_name]
@@ -60,7 +61,7 @@ class Swarm:
         for agent in self.agents:
             self.agents_data[agent.name] = {"name" : agent.name, "pos": agent.start_pos, "vel": [0,0,0], "yaw": agent.start_orn[2]}
             agent.set_swarm_activate()  # Indique que l'agent fait partie d'un essaim
-            
+            agent.swarm_name = agents_names
         self.followers_future_state = self.agents_data.copy()
         # Followers = tous les autres
         self.followers: list[UAV] = [a for a in agents if a is not self.leader and a.type == "uav"]
@@ -79,9 +80,9 @@ class Swarm:
         self.init_proxy()
         self.setup_swarm_com()
         for a in self.agents:
-            if hasattr(a, "setup_network"):
-                a.setup_network(self.ip,self.port_in, self.port_out)
-        self.leader.setup_network(ip, port_in, port_out)
+            a.setup_network_swarm(self.ip,self.port_in, self.port_out)
+            print('a')
+        self.leader.setup_network_swarm(self.ip, self.port_in, self.port_out)
         # ----------------- OFFSETS DE FORMATION -----------------
         self.formation_body_offsets: dict[str, np.ndarray] = {}
 
