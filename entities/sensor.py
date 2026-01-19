@@ -66,67 +66,38 @@ class GNSSensor(Sensor):
         return meas_pos, meas_vel
 
 
-# In entities/sensor.py
+# Dans entities/sensor.py
 
 class IMUSensor:
-    """
-    IMUSensor class for simulating IMU (Inertial Measurement Unit) sensor measurements.
-    This class simulates an accelerometer and gyroscope by computing proper acceleration
-    in the sensor body frame, including gravity effects and measurement noise.
-    Attributes:
-        last_vel (np.ndarray): Previous velocity vector (3D) used for acceleration calculation.
-        dt (float): Time step for discrete acceleration approximation (default: 0.01 seconds).
-        g_vector (np.ndarray): Gravitational acceleration vector in world frame [0, 0, 9.81] m/s².
-    Methods:
-        __init__(config_dict=None):
-            Initialize the IMUSensor with default parameters.
-            Args:
-                config_dict (dict, optional): Configuration dictionary for sensor parameters.
-        measure(vel, orn_q):
-            Simulate accelerometer and gyroscope measurements in the body frame.
-            Calculates proper acceleration (what an accelerometer measures) by:
-            1. Computing world frame acceleration from velocity change
-            2. Adding gravitational acceleration (proper acceleration)
-            3. Rotating to body frame using the orientation quaternion
-            4. Adding white noise to accelerometer readings
-            Args:
-                vel (np.ndarray): Linear velocity in world frame (3D vector).
-                orn_q (tuple/list): Orientation as a quaternion (4D).
-            Returns:
-                tuple: (acc_body, gyro_body)
-                    - acc_body (np.ndarray): Measured acceleration in body frame with noise (3D).
-                    - gyro_body (np.ndarray): Angular velocity in body frame (3D, currently zeros).
-    """
-
     def __init__(self, config_dict=None):
         self.last_vel = np.zeros(3)
-        self.dt = 1/100  # Assumed
+        self.dt = 1/100 # Supposé
         self.g_vector = np.array([0, 0, 9.81])
 
     def measure(self, vel, orn_q):
         """
-        Simulates an accelerometer + gyroscope
-        Returns: acc_body, gyro_body
+        Simule un accéléromètre + gyroscope
+        Retourne : acc_body, gyro_body
         """
-        # 1. Calculate World Acceleration (a = dv/dt)
-        # (This is a discrete approximation)
+        # 1. Calcul Accélération Monde (a = dv/dt)
+        # (C'est une approximation discrete)
         acc_world = (np.array(vel) - self.last_vel) / self.dt
         self.last_vel = np.array(vel)
         
-        # 2. Add "Felt Gravity" (Proper Acceleration)
-        # An accelerometer measures (a - g). Since g points downwards (-9.81), 
-        # a_measured = a_world - (-9.81) = a_world + 9.81
+        # 2. Ajout de la "pesanteur ressentie" (Proper Acceleration)
+        # Un accéléromètre mesure (a - g). Comme g pointe vers le bas (-9.81), 
+        # a_mesure = a_monde - (-9.81) = a_monde + 9.81
         acc_proper_world = acc_world + self.g_vector
         
-        # 3. Rotation to Body Frame (World -> Drone)
-        # We use the inverse rotation matrix
+        # 3. Rotation vers Body Frame (Monde -> Drone)
+        # On utilise la matrice inverse de rotation
         R_world_to_body = np.array(p.getMatrixFromQuaternion(orn_q)).reshape(3,3).T
         acc_body = R_world_to_body @ acc_proper_world
         
-        # Add noise (optional)
-        acc_body += np.random.normal(0, 0.1, 3) # White noise
+        # Ajout de bruit (facultatif)
+        acc_body += np.random.normal(0, 0.1, 3) # Bruit blanc
         
-        # Gyro (Angular velocity, here 0 or true value for simplicity)
+        # Gyro (Vitesse angulaire, ici on met 0 ou la vraie pour simplifier)
         gyro_body = np.zeros(3) 
         
         return acc_body, gyro_body
@@ -246,27 +217,9 @@ class LidarSensor:
         return detected_points
     
 class HeightSensor:
-    """
-    HeightSensor class for simulating a downward-facing distance sensor.
-    This class simulates a downward-facing LiDAR or Sonar sensor mounted on a drone.
-    It performs raycasting to measure the distance to the ground or nearest obstacle below
-    the drone, accounting for the drone's orientation and adding realistic noise.
-    Attributes:
-        client_id (int): PyBullet physics client ID for raycast queries.
-        noise_std (float): Standard deviation of Gaussian noise added to measurements (default: 0.01).
-        max_range (float): Maximum range of the sensor in meters (default: 4.0).
-    Methods:
-        measure(pos, orn_q): Measures the distance to the ground below the drone.
-            Args:
-                pos (tuple or array-like): Position of the drone in world coordinates (x, y, z).
-                orn_q (tuple or array-like): Orientation of the drone as a quaternion (x, y, z, w).
-            Returns:
-                float or None: Measured distance in meters, or None if the ground is out of range.
-                              Returns a non-negative value with added Gaussian noise.
-    """
     def __init__(self, physics_client_id, noise_std=0.01, max_range=4.0):
         """
-        Simulates a downward-facing distance sensor (Down-facing Lidar/Sonar).
+        Simule un capteur de distance orienté vers le bas (Down-facing Lidar/Sonar).
         """
         self.client_id = physics_client_id
         self.noise_std = noise_std
@@ -274,33 +227,33 @@ class HeightSensor:
 
     def measure(self, pos, orn_q):
         """
-        Returns measured distance to ground (or None if out of range).
+        Retourne la distance mesurée vers le sol (ou None si hors de portée).
         """
-        # 1. Calculate direction vector (Sensor points to the "Bottom" of the drone)
-        # In world frame, drone "down" changes if the drone tilts (Roll/Pitch)
+        # 1. Calcul du vecteur direction (Le capteur pointe vers le "Bas" du drone)
+        # En repère monde, le bas du drone change si le drone penche (Roll/Pitch)
         rot_mat = np.array(p.getMatrixFromQuaternion(orn_q)).reshape(3, 3)
-        # The "Down" vector in drone frame is [0, 0, -1]
-        # Rotate it to world frame
+        # Le vecteur "Bas" dans le repère du drone est [0, 0, -1]
+        # On le tourne dans le repère monde
         down_vec_world = rot_mat @ np.array([0, 0, -1])
 
-        # 2. Raycast (Shoot ray)
+        # 2. Raycast (Tir du rayon)
         start = np.array(pos)
         end = start + (down_vec_world * self.max_range)
         
         results = p.rayTest(start, end, physicsClientId=self.client_id)
-        # results[0] contains [objectUniqueId, linkIndex, hitFraction, hitPosition, hitNormal]
+        # results[0] contient [objectUniqueId, linkIndex, hitFraction, hitPosition, hitNormal]
         
         hit_fraction = results[0][2]
         
-        # 3. Processing
-        if hit_fraction == 1.0: # Nothing hit
-            return None # Too high for the sensor
+        # 3. Traitement
+        if hit_fraction == 1.0: # Rien touché
+            return None # Trop haut pour le capteur
         
-        # Actual distance = hit_fraction * max_range
+        # Distance réelle = hit_fraction * max_range
         dist = hit_fraction * self.max_range
         
-        # Add noise
+        # Ajout du bruit
         dist += np.random.normal(0, self.noise_std)
         
-        # Negative value protection
+        # Protection valeurs négatives
         return max(0.0, dist)
