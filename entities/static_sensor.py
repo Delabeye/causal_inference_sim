@@ -8,75 +8,108 @@ class RadarStation(Agent):
     def __init__(self, config: dict, physics_client_id: int, dt: float):
         self.config = config
         self.name = self.config.get("name", "Radar")
-        self.dt = dt
         self.physics_client_id = physics_client_id
-        self.position_noise_std = float(self.config.get("position_noise_std", 0.0))
-        self.velocity_noise_std = float(self.config.get("velocity_noise_std", 0.0))
+        
+        # --- Noise Configuration ---
+        self.pos_noise_std = float(self.config.get("position_noise_std", 0.1)) # Position noise (XYZ)
+        self.range_noise_std = float(self.config.get("range_noise_std", 0.05)) # Distance noise (Range)
+        self.pos_noise_mean = float(self.config.get("position_noise_mean",0.5))
+        self.range_noise_mean = float(self.config.get("range_noise_mean",0.5))
+
         self.bodyId = self.config.get("bodyId", 1000)   
-        # 1. Configuration Physique
-        # On utilise une forme visuelle simple (cylindre ou cube)
-        start_pos = self.config.get("pos", [0, 0, 0])
+        
+        # --- Temporal Configuration ---
+        self.radar_period = float(self.config.get("period", 0.1)) # ex: 0.1s = 10Hz
+        self.radar_last_time = 0.0
+        
+        self.type = self.config.get("type", "radar")
+
+        # 1. Physical Configuration
+        self.pos = self.config.get("pos", [0, 0, 0]) # Static position defined in config
         start_orn = p.getQuaternionFromEuler([0, 0, 0])
-        urdf_path = self.config.get("urdf_path", "assets/radar.urdf")
-        super().__init__(urdf_path, start_pos, start_orn, physics_client_id, dt)
+        urdf_path = self.config.get("urdf_path", "assets/cube.urdf") # Default cube
         
-        # Rendre l'objet statique (Masse = 0)
-        p.changeDynamics(self.bodyId, -1, mass=0, physicsClientId=self.physics_client_id)
+        super().__init__(urdf_path, self.pos, start_orn, physics_client_id, dt)
         
-        # Couleur distinctive (Rouge pour un radar "ennemi" ou de surveillance)
-        p.changeVisualShape(self.bodyId, -1, rgbaColor=[0.8, 0, 0, 1], physicsClientId=self.physics_client_id)
+        # Make the object static (Mass = 0) and phantom
+        p.changeDynamics(self.bodyId, -1, mass=0, localInertiaDiagonal=[0,0,0], physicsClientId=self.physics_client_id)
+        # Distinctive color (Red semi-transparent)
+        p.changeVisualShape(self.bodyId, -1, rgbaColor=[0.8, 0, 0, 0.6], physicsClientId=self.physics_client_id)
 
-        # 2. Configuration du Capteur
-        self.detection_range = float(self.config.get("range", 5.0)) # Rayon en mètres
-        self.detected_agents = []
-        
-        # Référence vers la liste des cibles (sera remplie par le Manager)
-        self.targets = [] 
+        # 2. Sensor Configuration
+        self.detection_range = float(self.config.get("range", 15.0)) # Range in meters
+        self.targets = [] # Reference to target list (filled by Manager)
 
-    def setup_network(self, ip, port_pub,_):
-        """Configure la radio du drone (ZeroMQ)"""
-        self.zmq_ctx = zmq.Context()
-        self.pub_socket = self.zmq_ctx.socket(zmq.PUB)
-        self.pub_socket.setsockopt(zmq.IDENTITY, self.name)  
-        self.pub_socket.connect(f"tcp://{ip}:{port_pub}")
+        # 3. Network
+        ip = self.config.get("ip", "localhost") # Default localhost
+        port_out = self.config.get("port_out", 5557)
+        self.setup_network(ip, port_out)
+
+    def setup_network(self, ip, port_pub):
+        """Configure the radar radio (ZeroMQ)"""
+        try:
+            self.zmq_ctx = zmq.Context()
+            self.pub_socket = self.zmq_ctx.socket(zmq.PUB)
+            # Using bind() because radar is infrastructure station (Server)
+            # If using central broker, replace with connect()
+            self.pub_socket.bind(f"tcp://{ip}:{port_pub}")
+            print(f"[{self.name}] Radio active on tcp://{ip}:{port_pub}")
+        except Exception as e:
+            print(f"[{self.name}] ZMQ Error: {e}")
+
+    def publish_detection(self, report, sim_time):
+        """Publish complete report via radio (ZeroMQ)"""
+        if not report:
+            return 
         
-    def publish_detection(self):
-        """Publie les agents détectés via la radio (ZeroMQ)"""
-        if not self.detected_agents:
-            return  # Rien à publier
-        
-        message = {
+        wrapper = {
             "radar_name": self.name,
-            "detected_agents": [self.detected_agents[0], self.detected_agents[1], self.detected_agents[2]],
-            "timestamp": p.getRealTimeSimulation(physicsClientId=self.physics_client_id)
+            "data": report,
+            "timestamp": sim_time
         }
-        self.pub_socket.send_string("State" + json.dumps(message))
+        # Send as JSON string
+        try:
+            self.pub_socket.send_string("RADAR " + json.dumps(wrapper))
+        except Exception as e:
+            print(f"[{self.name}] Send Error: {e}")
 
-    def think_and_act(self):
+    def think_and_act(self, sim_time):
         """
-        Boucle principale du radar : Scan de l'environnement
+        Main radar loop: Scan -> Measure -> Broadcast
         """
-        self.detected_agents = []
-        my_pos, _ = p.getBasePositionAndOrientation(self.bodyId, physicsClientId=self.physics_client_id)
-        my_pos = np.array(my_pos)
+        # Internal time update
+        detected_report = {}
 
+        # Scan targets
         for agent in self.targets:
-            # On ne se détecte pas soi-même
-            if agent.bodyId == self.bodyId:
-                continue
+            if agent.bodyId == self.bodyId: continue # No self-detection
             
-            # Récupérer position de la cible
+            # Ground truth
             target_pos, _ = p.getBasePositionAndOrientation(agent.bodyId, physicsClientId=self.physics_client_id)
-            target_pos = np.array(target_pos)
-            target_vel, _ = p.getBaseVelocity(agent.bodyId, physicsClientId=self.physics_client_id)
-            # Calcul distance
-            dist = np.linalg.norm(target_pos - my_pos)
+            dist = np.linalg.norm(np.array(target_pos) - np.array(self.pos))
             
             if dist <= self.detection_range:
-                pos_noise = np.random.normal(0.0, self.pos_noise_std, 3)
-                vel_noise = np.random.normal(0.0, self.vel_noise_std, 3)
-                self.detected_agents.append((agent.name, target_pos+pos_noise, target_vel+vel_noise))
-                # Action lors de la détection (Log, Alerte, etc.)
-                self.publish_detection()
+                # --- TARGET DETECTED ---
                 
+                # Measurement generation
+                meas_dist = dist + np.random.normal(self.range_noise_mean, self.range_noise_std)
+                est_pos = np.array(target_pos) + np.random.normal(self.pos_noise_mean, self.pos_noise_std, 3)
                 
+                # Transponder packet construction
+                detected_report[agent.name] = {
+                    "type": "radar",
+                    
+                    # Info for drone EKF (Correction)
+                    "anchor_pos": self.pos,          # Radar position (List [x,y,z])
+                    "measured_dist": meas_dist,      # Distance scalar
+                    
+                    # Info for other drones (Avoidance)
+                    "pos": est_pos.tolist(),  # Convert numpy -> list for JSON
+                }
+
+        # Publish if detections
+        if detected_report:
+            self.publish_detection(detected_report, sim_time)
+        
+        # Return report for internal simulator use (if needed)
+        return detected_report

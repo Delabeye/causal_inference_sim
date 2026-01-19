@@ -4,6 +4,7 @@ import pybullet as p
 from entities.uav import UAV
 import zmq
 import threading
+import random
 
 class Swarm:
     """
@@ -40,6 +41,11 @@ class Swarm:
         self.broadcast_interval = 0.02  # broadcast à chaque step
         self.last_broadcast = -self.broadcast_interval
         self.prev_targets = {}
+        #Com latency
+        self.perception_delay_mean = 0.1  # 100ms de retard
+        self.perception_delay_std = 0.02  # +/- 20ms
+        self.message_buffer = []
+        agents_names = [a.name for a in agents if a.type == "uav"]
         # Choix du leader
         if leader_name is not None:
             leader_list = [a for a in agents if getattr(a, "name", "") == leader_name]
@@ -55,7 +61,7 @@ class Swarm:
         for agent in self.agents:
             self.agents_data[agent.name] = {"name" : agent.name, "pos": agent.start_pos, "vel": [0,0,0], "yaw": agent.start_orn[2]}
             agent.set_swarm_activate()  # Indique que l'agent fait partie d'un essaim
-            
+            agent.swarm_name = agents_names
         self.followers_future_state = self.agents_data.copy()
         # Followers = tous les autres
         self.followers: list[UAV] = [a for a in agents if a is not self.leader and a.type == "uav"]
@@ -74,9 +80,9 @@ class Swarm:
         self.init_proxy()
         self.setup_swarm_com()
         for a in self.agents:
-            if hasattr(a, "setup_network"):
-                a.setup_network(self.ip,self.port_in, self.port_out)
-        self.leader.setup_network(ip, port_in, port_out)
+            a.setup_network_swarm(self.ip,self.port_in, self.port_out)
+            print('a')
+        self.leader.setup_network_swarm(self.ip, self.port_in, self.port_out)
         # ----------------- OFFSETS DE FORMATION -----------------
         self.formation_body_offsets: dict[str, np.ndarray] = {}
 
@@ -206,29 +212,36 @@ class Swarm:
             try:
                 # Lecture non-bloquante
                 msg = self.sub_socket.recv_string()
-                
-                # 1. Vérification de sécurité : faut-il un espace ?
-                if " " not in msg:
-                    continue # Message malformé, on ignore
-                
-                # 2. Découpage standard sur le PREMIER espace
-                topic, json_str = msg.split(" ", 1)
-                
-                # 3. Traitement selon le Topic
-                if topic == "State":
-                    data = json.loads(json_str)
-                    # On ignore ses propres messages (si le swarm s'écoute lui-même via proxy)
-                    # Note : Le Swarm n'a pas de "name" dans agents_data, donc pas de risque de conflit direct
-                    # sauf si 'data' vient d'un agent qu'on suit.
-                    if "name" in data:
-                        self.agents_data[data["name"]] = data
-                        
+                delay = max(0, random.gauss(self.perception_delay_mean, self.perception_delay_std))
+                visible_time = self.sim_time + delay
+                self.message_buffer.append((visible_time,msg))
             except zmq.Again:
                 # Plus de messages
                 break
             except Exception as e:
                 print(f"Erreur réseau sur {self.name}: {e}")
                 break
+            
+        buffer_remaining = []
+
+        for target_time, msg in self.message_buffer:
+            if self.sim_time >= target_time:
+                # --- LE MESSAGE EST PRÊT : ON LE TRAITE ---
+                if " " in msg:
+                    topic, json_str = msg.split(" ", 1)
+                    try:
+                        if topic == "State":
+                            data = json.loads(json_str)
+                            if "name" in data:
+                                self.agents_data[data["name"]] = data
+                    except ValueError:
+                        pass
+            else:
+                buffer_remaining.append((target_time, msg))
+                # --- PAS ENCORE PRÊT : ON LE GARDE ---
+        # On remplace l'ancien buffer par ceux qui restent
+        self.message_buffer = buffer_remaining
+            
 
     def cleanup(self):
         """Ferme proprement les connexions (important)"""
@@ -262,8 +275,7 @@ class Swarm:
 
             # --- ALGORITHME DE LISSAGE (Low Pass Filter sur l'angle) ---
             # On calcule la différence d'angle (en gérant le saut -pi/pi)
-            diff_yaw = np.arctan2(np.sin(target_yaw_leader - self.smooth_swarm_yaw), 
-                                  np.cos(target_yaw_leader - self.smooth_swarm_yaw))
+            diff_yaw = np.arctan2(np.sin(target_yaw_leader - self.smooth_swarm_yaw), np.cos(target_yaw_leader - self.smooth_swarm_yaw))
             
             # Paramètre de fluidité :
             # 0.1 = très lent (le swarm met du temps à tourner)
@@ -337,4 +349,4 @@ class Swarm:
             self.sim_time += self.dt
         else:
             self.sim_time += self.dt
-#            
+            

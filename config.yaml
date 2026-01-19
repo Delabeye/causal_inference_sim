@@ -10,139 +10,128 @@ physics:
   gravity: [0.0, 0.0, -9.81]
 
 world:
-  obstacles:
-    - type: "cube"
-      center: [2.0, 0.0, 1.0]
-      length: 1.0
-      width: 1.0
-      height: 2.0
-      knowledge: True
-      id : 1
-    - type: "sphere"
-      center: [-2.0, 1.0, 1.0]
-      radius: 0.5
-      knowledge: True
-      id : 2
-    - type: "cylinder"
-      center: [0.0, 3.0, 1.5]
-      radius: 0.25
-      height: 3.0
-      knowledge: True
-      id : 3
+  type: "generated"
+  city: {filename: "city",n_blocks_x: 4, n_blocks_y: 4, block_size: 20.0, road_width: 10.0, buildings_per_side: 3}
+  res: 0.25
+  Astar: {world_bounds: {x: [-60, 60], y: [-60, 60], z: [0.01, 60]}, safety_margin: 0.25}
 
 swarm:
-  enabled: true     
-  leader: "drone_0"   
-  min_sep: 0.6        
-  avoid_gain: 0.5     
+  
+  - id: "A"
+    leader: "drone_0"   
+    min_sep: 0.6        
+    avoid_gain: 0.5    
+    port_in: 5556
+    port_out: 5557
+    ip: "localhost" 
 
 agents:
   #------------------- LEADER (0,0,1) ------------------------
   - type: "uav"
     name: "drone_0"
+    swarm_id: "A"
     urdf_path: "assets/quadrotor.urdf"
     body_id: 0000
-    mass: 0.030
+    mass: 0.027
     start_pos: [0.0, 0.0, 0.0]
     start_orn_euler: [0.0, 0.0, 0.0]
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
-    waypoints: [[5.0, 0.0, 1.0], [2.0, 1.0, 1.0], [2.0, -1.0, 1.2], [0.0, -2.0, 1.0], [-2.0, -1.0, 1.0], [-2.0, 1.0, 1.2], [0.0, 0.0, 1.0]]
-    acc_limit_xy: 5.0
-    acc_limit_z: 5.0
-    F_max_factor: 2.5
-    pos_tolerance: 0.05
-    vel_tolerance: 0.05
-    yaw_align_gain: 4.0
-    yaw_rate_max_deg: 120.0
-    yaw_align_threshold_deg: 10.0
-    tilt_gain: 0.4
-    pitch_max_deg: 35.0
-    roll_max_deg: 35.0
-    tilt_smoothing: 0.5
-    
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    waypoints: [[60.0, 60.0, 1.0],[-30.0, 0.0, 1.0],[0.0, 30.0, 25.0],[-60.0, 60.0, 1.0]]
+    ctrl_freq: 80
+    communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
     sensors:
-      gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
+      gnss: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05,frequency: 10, delay_mean: 0.1,delay_std: 0.01}
       imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
       lidar: {enabled: true, max_distance: 20.0, angle_resolution: 4.0, fov_horizontal: 90.0, fov_vertical: 30.0, frequency: 10.0}
-    astar:
-      world_bounds: {x: [-10, 10], y: [-10, 10], z: [0.1, 5.0]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
+    wind: {wind_mean: [0,0,0], turbulence: 10}
+    radar : 
+      - name: "Radar_Alpha"
+        port : 5560
+        ip : "localhost"
+        pos: [0,0,0]
 
   #------------------- SUIVEURS (Décalés pour éviter la Sphère à -2,1) ------------------------
   - type: "uav"
     name: "drone_1"
+    swarm_id: "A"
     urdf_path: "assets/quadrotor.urdf"
     body_id: 0001
-    mass: 0.030
+    mass: 0.027
     start_pos: [-0.5, -0.5, 0.0] 
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
+    ctrl_freq: 80
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
     sensors:
-      gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
+      gnss: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05,frequency: 10, delay_mean: 0.1,delay_std: 0.01}
       imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
       lidar: {enabled: true, max_distance: 20.0, angle_resolution: 4.0, fov_horizontal: 90.0, fov_vertical: 30.0, frequency: 10.0}
-    astar:
-      world_bounds: {x: [-10, 10], y: [-10, 10], z: [0.1, 5.0]}
+    wind: {wind_mean: [0,0,0], turbulence: 10}
+    radar : 
+      - name: "Radar_Alpha"
+        port : 5560
+        ip : "localhost"
+        pos: [0,0,0]
 
   - type: "uav"
     name: "drone_2"
+    swarm_id: "A"
     urdf_path: "assets/quadrotor.urdf"
     body_id: 0002
-    mass: 0.030
+    mass: 0.027
     start_pos: [-0.5, 0.5, 0.0] 
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
+    ctrl_freq: 80
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
     sensors:
-      gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
-      imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
+      gnss: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05,frequency: 10, delay_mean: 0.1,delay_std: 0.01}
+      imu: {enabled: true,accel_noise_mean: 0.5, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
       lidar: {enabled: true, max_distance: 20.0, angle_resolution: 4.0, fov_horizontal: 90.0, fov_vertical: 30.0, frequency: 10.0}
-    astar:
-      world_bounds: {x: [-10, 10], y: [-10, 10], z: [0.1, 5.0]}
+    wind: {wind_mean: [0,0,0], turbulence: 10}
+    radar : 
+      - name: "Radar_Alpha"
+        port : 5560
+        ip : "localhost"
+        pos: [0,0,0]
+
 
   - type: "uav"
     name: "drone_3"
     urdf_path: "assets/quadrotor.urdf"
     body_id: 0003
-    mass: 0.030
-    start_pos: [-1.0, 0.0, 0.0] # <--- DÉCALÉ POUR NE PAS ÊTRE SUR LA SPHERE (-2,1)
+    mass: 0.027
+    start_pos: [-1.0, 0.0, 0.0]
     start_orn_euler: [0.0, 0.0, 0.0]
-    waypoints: []
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3]}
-    components:
-      controller_x: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_y: {type: "pid", gains: {Kp: 1.0, Ki: 0.0, Kd: 2.0}, windup: 1.0}
-      controller_z: {type: "pid", gains: {Kp: 3.0, Ki: 4.0, Kd: 4.0}, windup: 1.0}
+    waypoints: [[-5.0,0,0],[-5.0,0,10]]
+    safety_radius: 0.35
+    max_repulsive_force: 1.0
+    ctrl_freq: 80
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
     sensors:
-      gps: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05}
+      gnss: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05,frequency: 10, delay_mean: 0.1,delay_std: 0.01}
       imu: {enabled: true, accel_noise_std: 0.3, gyro_noise_std: 0.03, gravity: 9.81}
       lidar: {enabled: true, max_distance: 20.0, angle_resolution: 4.0, fov_horizontal: 90.0, fov_vertical: 30.0, frequency: 10.0}
-    astar:
-      world_bounds: {x: [-10, 10], y: [-10, 10], z: [0.1, 5.0]}
+    wind: {wind_mean: [0,0,0], turbulence: 10}
+    radar : 
+      - name: "Radar_Alpha"
+        port : 5560
+        ip : "localhost"
+        pos: [0,0,0]
+
 
   - name: "Radar_Alpha"
     type: "radar"
     pos: [3, 3, 0]      
-    range: 4.0          
-    urdf_path: "assets/radar.urdf"
-
-  - name: "Radar_Beta"
-    type: "radar"
-    pos: [5, 5, 0]
-    range: 1.5
+    range: 30          
     urdf_path: "assets/radar.urdf"
     position_noise_std: 0.2
     velocity_noise_std: 0.1
-    body_id: 1001
+    body_id: 1000
+    port_out: 5560
+    ip: "localhost"
+    period: 1.0
+
