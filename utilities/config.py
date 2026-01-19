@@ -5,31 +5,44 @@ from pathlib import Path
 
 def load_config(config_path: str = "config.yaml"):
     """
-    Charge le fichier de configuration YAML (encodage UTF-8).
-
-    - Vérifie que le fichier existe.
-    - Lève une erreur explicite si le YAML est vide ou invalide.
-    - Retourne toujours un dict si tout va bien.
+    Load and validate a YAML configuration file with UTF-8 encoding.
+    This function reads a YAML configuration file and performs comprehensive validation
+    to ensure the file exists, is not empty, and contains valid YAML dictionary structure.
+    Args:
+        config_path (str, optional): Path to the YAML configuration file. 
+            Defaults to "config.yaml".
+    Returns:
+        dict: A dictionary containing the parsed YAML configuration.
+    Raises:
+        FileNotFoundError: If the configuration file does not exist at the specified path.
+        ValueError: If the configuration file is empty or contains only comments.
+        TypeError: If the configuration file does not represent a YAML dictionary.
+    Example:
+        >>> config = load_config("config.yaml")
+        Configuration loaded from config.yaml
+        >>> isinstance(config, dict)
+        True
     """
+
     path = Path(config_path)
 
     if not path.exists():
         raise FileNotFoundError(
-            f"Fichier de configuration '{config_path}' introuvable "
-            f"(dossier courant = {Path.cwd()})"
+            f"Configuration file '{config_path}' not found "
+            f"(current directory = {Path.cwd()})"
         )
 
     with path.open("r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     if config is None:
-        # Fichier vide ou juste des commentaires
-        raise ValueError(f"Le fichier de configuration '{config_path}' est vide.")
+        # File is empty or contains only comments
+        raise ValueError(f"Configuration file '{config_path}' is empty.")
 
     if not isinstance(config, dict):
         raise TypeError(
-            f"Le fichier de configuration '{config_path}' ne décrit pas un dictionnaire YAML."
+            f"Configuration file '{config_path}' does not represent a YAML dictionary."
         )
 
-    print(f"Configuration chargée depuis {config_path}")
+    print(f"Configuration loaded from {config_path}")
     return config

@@ -6,14 +6,14 @@ import time
 
 
 def main():
-    # Charge la config
+    # Load the config
     config = load_config("config.yaml")
 
-    # Par sécurité, on vérifie quand même que c’est bien un dict
+    # For safety, we verify it's a dict
     if config is None:
         raise RuntimeError(
-            "La configuration n'a pas été chargée (config=None). "
-            "Vérifie le fichier config.yaml."
+            "The configuration was not loaded (config=None). "
+            "Check the config.yaml file."
         )
 
     sim = SimulationManager(config)
@@ -21,10 +21,10 @@ def main():
     try:
         sim.run()
 
-        # garder la fenêtre GUI ouverte quand la simu est terminée
+        # keep the GUI window open when simulation is finished
         mode = str(config["simulation"]["connect_mode"]).lower()
         if mode == "gui":
-            print("Simulation terminée. Ferme la fenêtre PyBullet pour quitter.")
+            print("Simulation finished. Close the PyBullet window to quit.")
             while p.isConnected():
                 time.sleep(0.1)
 

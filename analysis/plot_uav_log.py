@@ -166,7 +166,7 @@ def plot_log(path):
     print("=" * 40)
 
 if __name__ == "__main__":
-    default_log = os.path.join("logs", "drone_0_log.csv")
+    default_log = os.path.join("logs", "drone_0.csv")
     log_path = sys.argv[1] if len(sys.argv) > 1 else default_log
     plot_log(log_path)
 
