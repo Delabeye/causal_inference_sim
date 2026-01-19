@@ -6,6 +6,41 @@ import random
 import os
 
 class World:
+    """
+    World class for managing physics simulation environment and city generation.
+    This class initializes a PyBullet physics client and provides utilities for
+    generating procedural city environments with buildings and obstacles.
+    Attributes:
+        p: PyBullet module reference for physics operations.
+        physics_client_id (int): Unique identifier for the PyBullet physics client.
+        obstacle_ids (list[int]): List of PyBullet body IDs for obstacles in the world.
+    Methods:
+        __init__(physics_client_id: int) -> None:
+            Initializes the World with a physics client, sets gravity, and configures
+            the simulation environment.
+        generate_city_urdf(config: dict) -> list[dict]:
+            Generates a procedural city layout and creates a URDF file with buildings.
+            Args:
+                config (dict): Configuration dictionary with optional keys:
+                    - filename (str): Name of the URDF file to generate. Default: "city"
+                    - n_blocks_x (int): Number of city blocks along X-axis. Default: 4
+                    - n_blocks_y (int): Number of city blocks along Y-axis. Default: 4
+                    - block_size (float): Size of each block in meters. Default: 20.0
+                    - road_width (float): Width of roads between blocks in meters. Default: 4.0
+                    - buildings_per_side (int): Number of buildings per side within a block. Default: 3
+            Returns:
+                list[dict]: List of building dictionaries, each containing:
+                    - id (int): Unique building identifier
+                    - center (list[float]): [x, y, height] coordinates of building center
+                    - height (float): Height of the building in meters
+                    - width (float): Width of the building in meters
+                    - length (float): Depth/length of the building in meters
+            The generated URDF file includes:
+            - Ground plane (asphalt) as the base world link
+            - Procedurally generated buildings with random heights (30-50m) and colors
+            - Fixed joints attaching all buildings to the ground plane
+            - Inertial, visual, and collision properties for each building
+    """
     def __init__(self, physics_client_id: int):
         self.p = p
         self.physics_client_id = physics_client_id
@@ -13,6 +48,7 @@ class World:
         self.p.setGravity(0, 0, -9.81, physicsClientId=self.physics_client_id)
         self.p.setRealTimeSimulation(0, physicsClientId=self.physics_client_id)
         self.p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        
     def generate_city_urdf(self,config):
     
         filename=config.get("filename","city")

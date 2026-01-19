@@ -3,6 +3,7 @@ from scipy.spatial import KDTree
 from pathfinding.core.diagonal_movement import DiagonalMovement
 from pathfinding.core.grid import Grid
 from pathfinding.finder.a_star import AStarFinder
+import pybullet as p
 
 class HeightmapAStar:
     def __init__(self, config, resolution=0.25):
@@ -65,6 +66,150 @@ class HeightmapAStar:
                 
         if centers:
             self.building_tree = KDTree(np.array(centers))
+    
+    def custom_heightmap (self):
+        z_start = self.bounds['z'][1] + 100
+        z_end = self.bounds['z'][0] - 1.0 # Un peu en dessous du sol
+    
+        # On parcourt la grille par ligne (X) pour envoyer des paquets de rayons (Y)
+        for i in range(self.width):
+            ray_starts = []
+            ray_ends = []
+        
+            # Calcul du X monde actuel
+            curr_x = self.min_x + i * self.res
+        
+            for j in range(self.height):
+            # Calcul du Y monde actuel
+                curr_y = self.min_y + j * self.res
+            
+                ray_starts.append([curr_x, curr_y, z_start])
+                ray_ends.append([curr_x, curr_y, z_end])
+            
+        # Envoi de la ligne complète à PyBullet
+            results = p.rayTestBatch(ray_starts, ray_ends)
+        
+        # Extraction des altitudes
+            for j, res in enumerate(results):
+                hit_fraction = res[2]
+                hit_pos = res[3]
+            
+                if hit_fraction < 1.0:
+                # On stocke l'altitude Z de l'impact
+                    self.h_map[i, j] = hit_pos[2]
+                else:
+                # Si rien n'est touché, on considère le sol (Z=0)
+                    self.h_map[i, j] = 0.0
+                
+            if i % 400 == 0: # Barre de progression simple
+                print(f"Progression : {int(i / self.width * 100)}%")
+
+        print("Heightmap générée avec succès.")
+        
+
+    def compute_repulsive_force(self, current_pos, safety_radius, max_force, swarm_active, leader, swarm_pos):
+        force_vec = np.array([0.0, 0.0, 0.0])
+        k_obs = 0.5
+        rows, cols = self.h_map.shape
+    
+        # Conversion position monde -> index grille (avec (0,0) au centre)
+        # On utilise // pour obtenir un entier (floor division)
+        ix = int(current_pos[0] / self.res + rows / 2)
+        iy = int(current_pos[1] / self.res + cols / 2)
+        window_px = int(safety_radius / self.res)
+    
+        # Bornes de la fenêtre (sécurisées pour ne pas sortir de la matrice)
+        x_min, x_max = max(0, ix - window_px), min(rows, ix + window_px + 1)
+        y_min, y_max = max(0, iy - window_px), min(cols, iy + window_px + 1)
+    
+        # Extraction de la zone locale
+        local_h_map = self.h_map[x_min:x_max, y_min:y_max]
+    
+        # Calcul des coordonnées réelles de chaque pixel de la zone extraite
+        # (On fait l'opération inverse pour retrouver le mètre depuis l'index)
+        x_range = (np.arange(x_min, x_max) - rows / 2) * self.res
+        y_range = (np.arange(y_min, y_max) - cols / 2) * self.res
+        X, Y = np.meshgrid(x_range, y_range, indexing='ij')
+        
+        DX = current_pos[0] - X
+        DY = current_pos[1] - Y
+        Dist_horizontale = np.sqrt(DX**2 + DY**2)
+
+        # --- LOGIQUE DE DÉCISION ---
+        
+        # Filtre de base : points dans le rayon de sécurité
+        mask_near = (Dist_horizontale < safety_radius) & (Dist_horizontale > 0.1)
+
+        # CAS A : Le point est AU-DESSUS du drone (Mur/Obstacle haut) -> On pousse sur le côté (XY)
+        mask_wall = mask_near & (local_h_map >= current_pos[2])
+        n_wall_pts = np.sum(mask_wall)
+        
+        if n_wall_pts > 0:
+            # On calcule la force moyenne pour ne pas exploser les compteurs
+            # Utilisation d'une décroissance quadratique pour plus de douceur
+            mags = (1.0 - (Dist_horizontale[mask_wall] / safety_radius))**2
+            weights = mags / (Dist_horizontale[mask_wall] + 0.01)
+            sum_weights = np.sum(weights)
+            
+            # Vecteur de répulsion pur (pousse vers l'arrière)
+            fx_rep = np.sum((DX[mask_wall] / Dist_horizontale[mask_wall]) * weights * max_force) / sum_weights
+            fy_rep = np.sum((DY[mask_wall] / Dist_horizontale[mask_wall]) * weights * max_force) / sum_weights
+            
+            k_glide = 0.5  # Ajustez entre 0.2 et 0.8
+            fx_glide = -fy_rep * k_glide
+            fy_glide =  fx_rep * k_glide
+            
+            # 3. Application de la force combinée
+            force_vec[0] += (fx_rep + fx_glide) * k_obs
+            force_vec[1] += (fy_rep + fy_glide) * k_obs
+
+        # CAS B : Le point est EN-DESSOUS du drone (Sol/Toit) -> On pousse vers le haut (Z)
+        # On ne considère que si on est proche verticalement (ex: marge de 2.0m)
+        v_margin = 2.5           # Zone d'influence verticale (mètres)
+        ground_threshold = 1   # En dessous de 2m, on considère que c'est le sol
+        
+        # Filtre de base : points sous le drone et dans la zone d'influence
+        mask_below = mask_near & (local_h_map < current_pos[2]) & (local_h_map > current_pos[2] - v_margin)
+
+        if np.any(mask_below):
+            # CAS B1 : C'est le SOL (Altitude basse)
+            mask_is_ground = mask_below & (local_h_map < ground_threshold)
+            
+            # CAS B2 : C'est un IMMEUBLE / OBSTACLE (Altitude haute mais sous le drone)
+            mask_is_roof = mask_below & (local_h_map >= ground_threshold)
+
+            # Comportement pour le SOL : Force douce pour le maintien d'altitude
+            if np.any(mask_is_ground):
+                dist_v_ground = current_pos[2] - local_h_map[mask_is_ground]
+                mag_ground = (1.0 - (dist_v_ground / v_margin))**2
+                # On applique un gain plus faible (k_ground) pour éviter que le drone ne "saute"
+                force_vec[2] += np.mean(mag_ground * max_force) * 0.3 
+
+            # Comportement pour un TOIT : Force plus ferme pour éviter la collision
+            if np.any(mask_is_roof):
+                dist_v_roof = current_pos[2] - local_h_map[mask_is_roof]
+                mag_roof = (1.0 - (dist_v_roof / v_margin))**2
+                # On applique une force plus importante (k_roof) car l'impact est plus dangereux
+                force_vec[2] += np.mean(mag_roof * max_force) * 1.2
+                
+                # OPTIONNEL : Si c'est un immeuble, on peut aussi ajouter une petite 
+                # force horizontale (XY) pour que le drone s'écarte des bords du toit
+                force_vec[0] += np.mean((DX[mask_is_roof] / Dist_horizontale[mask_is_roof]) * mag_roof * max_force) * 0.2
+                force_vec[1] += np.mean((DY[mask_is_roof] / Dist_horizontale[mask_is_roof]) * mag_roof * max_force) * 0.2
+        if swarm_active and not leader:
+            for _,other_pos in swarm_pos.items():
+                diff = current_pos - other_pos
+                dist_uav = np.linalg.norm(diff)
+                if dist_uav < safety_radius:
+                    mag = (1.0 - (dist_uav / safety_radius))
+                    force_vec += ((diff / dist_uav) * mag * max_force)/2
+
+        # Normalisation finale
+        total_norm = np.linalg.norm(force_vec)
+        if total_norm > max_force:
+            force_vec = (force_vec / total_norm) * max_force
+
+        return force_vec
 
     def plan(self, start_pos, goal_pos):
         # 1. Conversion positions -> indices
@@ -93,7 +238,7 @@ class HeightmapAStar:
         node_start.walkable = True 
         
         if not node_end.walkable:
-            print(f"[A*] Cible inaccessible (dans un mur gonflé).")
+            print(f"[A*] Cible inaccessible ")
             return None
 
         # 5. Calcul du chemin
