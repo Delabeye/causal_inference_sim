@@ -177,6 +177,24 @@ class UAV(Agent):
         os.makedirs("logs", exist_ok=True)
         if os.path.exists(self.log_file): os.remove(self.log_file)
         
+        # Header complet pour l'analyse causale
+        with open(self.log_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "time", 
+                "gt_x", "gt_y", "gt_z",         # Ground Truth
+                "gt_vx", "gt_vy", "gt_vz",      
+                "meas_x", "meas_y", "meas_z",   # Sensors
+                "gnss_error_mag",
+                "wind_x", "wind_y", "wind_z",   # Environment
+                "wind_mag",
+                "rep_force_mag",                # Interaction
+                "nearest_neighbor_dist",
+                "target_x", "target_y", "target_z", # Intent
+                "tracking_error_mag",
+                "collision_flag"                # Flags
+            ])
+        
         if self.pub_socket is not None:
             self.broadcast_state(pos=self.start_pos, vel=[0,0,0])
         p.changeDynamics(self.bodyId, -1, linearDamping=0, angularDamping=0)
@@ -226,11 +244,13 @@ class UAV(Agent):
 
     def _compute_repulsive_force(self, current_pos):
         force_vec = np.array([0.0, 0.0, 0.0])
-
+        min_dist = np.inf
         if self.other_agent_pos != {}:
             for _,other_pos in self.other_agent_pos.items():
                 diff = current_pos - other_pos
                 dist_uav = np.linalg.norm(diff)
+                if dist_uav < min_dist: 
+                    min_dist = dist_uav
                 if dist_uav < self.safety_radius:
                     mag = (1.0 - (dist_uav / self.safety_radius))
                     force_vec += ((diff / dist_uav) * mag * self.max_repulsive_force)/2
@@ -285,6 +305,9 @@ class UAV(Agent):
         total_norm = np.linalg.norm(force_vec)
         if total_norm > self.max_repulsive_force:
             force_vec = (force_vec / total_norm) * self.max_repulsive_force
+
+        self.last_repulsive_force_mag = total_norm
+        self.dist_to_nearest_neighbor = min_dist
 
         return force_vec
     
@@ -456,7 +479,7 @@ class UAV(Agent):
         
         # Logging (Optional: Log at physics freq or control freq)
         if int(self._sim_time/self.dt) % 10 == 0:
-            self._log(gt["pos"])
+            self._log_full_state(gt)
 
     def _update_control_loop(self,gt):
         """
@@ -602,6 +625,7 @@ class UAV(Agent):
         if self.replan_timer > 0: self.replan_timer -= 1
 
         # --- CONTROL COMMANDS ---
+        self.current_target_pos = target_pos
         # Repulsive Force
         if self.environment == "generated":
             F_rep = self._compute_repulsive_force(pos)    
@@ -668,8 +692,42 @@ class UAV(Agent):
         except:
             pass 
 
-    def _log(self, pos):
-        if int(self._sim_time/self.dt)%10==0:
-            with open(self.log_file, "a", newline="") as f:
-                csv.writer(f).writerow([round(self._sim_time,3), *pos])
+    def _log_full_state(self, gt):
+        """
+        Logging avancé pour l'analyse causale sans perturber l'affichage console.
+        """
+        # Detect collision (simple proximity check for log flag)
+        collision_flag = 0
+        if len(p.getContactPoints(self.bodyId)) > 0:
+            collision_flag = 1
+        
+        meas_pos = self.ekf.x[:3]
+        
+        # Derived metrics
+        gnss_error = np.linalg.norm(np.array(meas_pos) - np.array(gt["pos"]))
+        wind_mag = np.linalg.norm(self.current_wind)
+        tracking_error = np.linalg.norm(np.array(gt["pos"]) - np.array(self.current_target_pos))
+
+        with open(self.log_file, "a", newline="") as f:
+            row = [
+                round(self._sim_time, 3),
+                # Ground Truth
+                *gt["pos"], *gt["vel"],
+                # Sensors
+                *meas_pos,
+                gnss_error,
+                # Env
+                *self.current_wind,
+                wind_mag,
+                # Interaction
+                round(self.last_repulsive_force_mag, 3),
+                round(self.dist_to_nearest_neighbor, 3),
+                # Intent
+                *self.current_target_pos,
+                tracking_error,
+                collision_flag
+            ]
+            # Clean float formatting
+            row = [x if isinstance(x, (int, str)) else round(float(x), 4) for x in row]
+            csv.writer(f).writerow(row)
 
