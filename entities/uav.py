@@ -646,7 +646,7 @@ class UAV(Agent):
         final_target_pos = target_pos + (final_target_vel * self.CTRL_DT)
         vector_to_target = final_target_pos - pos
         dist_to_target = np.linalg.norm(vector_to_target)
-        if dist_to_target > 3:
+        if dist_to_target > 2.0:
             virtual_target_pos = pos + (vector_to_target / dist_to_target) * 1.0
         else:
             virtual_target_pos = final_target_pos
