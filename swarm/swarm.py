@@ -81,7 +81,6 @@ class Swarm:
         self.setup_swarm_com()
         for a in self.agents:
             a.setup_network_swarm(self.ip,self.port_in, self.port_out)
-            print('a')
         self.leader.setup_network_swarm(self.ip, self.port_in, self.port_out)
         # ----------------- OFFSETS DE FORMATION -----------------
         self.formation_body_offsets: dict[str, np.ndarray] = {}
