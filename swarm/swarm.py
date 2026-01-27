@@ -83,8 +83,8 @@ class Swarm:
         # IMPORTANT: do not bind on the UAV side, otherwise ports collide
         # with the proxy on Windows (often reported as "Permission denied").
         for a in self.agents:
-            if getattr(a, "type", None) == "uav":
-                a.setup_network_swarm(self.ip, self.port_in, self.port_out)
+            a.setup_network_swarm(self.ip,self.port_in, self.port_out)
+        self.leader.setup_network_swarm(self.ip, self.port_in, self.port_out)
         # ----------------- OFFSETS DE FORMATION -----------------
         self.formation_body_offsets: dict[str, np.ndarray] = {}
 
