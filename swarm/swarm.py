@@ -79,10 +79,12 @@ class Swarm:
         self.ip = ip
         self.init_proxy()
         self.setup_swarm_com()
+        # Each UAV should CONNECT to the proxy endpoints.
+        # IMPORTANT: do not bind on the UAV side, otherwise ports collide
+        # with the proxy on Windows (often reported as "Permission denied").
         for a in self.agents:
-            a.setup_network_swarm(self.ip,self.port_in, self.port_out)
-            print('a')
-        self.leader.setup_network_swarm(self.ip, self.port_in, self.port_out)
+            if getattr(a, "type", None) == "uav":
+                a.setup_network_swarm(self.ip, self.port_in, self.port_out)
         # ----------------- OFFSETS DE FORMATION -----------------
         self.formation_body_offsets: dict[str, np.ndarray] = {}
 

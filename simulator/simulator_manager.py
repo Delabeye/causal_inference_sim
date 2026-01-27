@@ -126,7 +126,15 @@ class SimulationManager:
             )
             self.planner.custom_heightmap()
         # Drones
+        # Optional per-run log directory (propagated to UAV configs)
+        sim_log_dir = None
+        if isinstance(self.config, dict):
+            sim_log_dir = self.config.get("simulation", {}).get("log_dir", None)
         for agent_cfg in self.config.get("agents", []):
+
+            # Propagate global log directory to each UAV config (if provided)
+            if sim_log_dir and isinstance(agent_cfg, dict) and agent_cfg.get("type") == "uav":
+                agent_cfg["log_dir"] = sim_log_dir
             
             if agent_cfg.get("type") == "radar":
                 radar = RadarStation(config=agent_cfg, physics_client_id=self.physics_client_id, dt=self.dt)

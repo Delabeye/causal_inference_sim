@@ -226,23 +226,29 @@ class UAV(Agent):
         self.gnss_delay_std = sens.get("gnss", {}).get("delay_std", 0.01)
         self.next_gnss_trigger = 0.0
         
-        # Wind
+        # --- WIND ---
+        # Backward compatible parsing:
+        # - preferred: config['wind'] = {'wind_mean': [x,y,z], 'turbulence': val}
+        # - legacy:    config['wind_mean'], config['turbulence']
         self.current_wind = np.zeros(3)
-        self.mean_wind = self.config.get("wind_mean", [0, 0, 0])
-        self.turbulence = self.config.get("turbulence", 15)
+        wind_cfg = self.config.get("wind", {}) if isinstance(self.config.get("wind", {}), dict) else {}
+        self.mean_wind = wind_cfg.get("wind_mean", self.config.get("wind_mean", [0, 0, 0]))
+        self.turbulence = wind_cfg.get("turbulence", self.config.get("turbulence", 15))
         self.wind_module = DrydenGustModel(self.dt, self.turbulence, self.mean_wind)
         
-        # Radar
+        # radar 
         radar_list = self.config.get("radar", None)
         if radar_list:
             self.radar_com_setup(radar_list)
         
         # Logs
         self.logging_enabled = True
-        self.log_file = os.path.join("logs", f"{self.name}.csv")
-        os.makedirs("logs", exist_ok=True)
-        if os.path.exists(self.log_file):
-            os.remove(self.log_file)
+        # Logs (allow per-run log directory)
+        log_dir = self.config.get("log_dir", "logs")
+        self.log_file = os.path.join(log_dir, f"{self.name}.csv")
+        os.makedirs(log_dir, exist_ok=True)
+        if os.path.exists(self.log_file): os.remove(self.log_file)
+        
         
         # Complete header for causal analysis
         with open(self.log_file, "w", newline="") as f:
@@ -467,36 +473,32 @@ class UAV(Agent):
     # COMMUNICATION
     # -----------------------------------------------------------------------
     def setup_network_swarm(self, ip, port_pub_swarm, port_sub_swarm):
-        """
-        Setup ZMQ sockets for swarm communication.
-        
-        Creates PUB and SUB sockets for bidirectional state exchange with swarm network.
-        PUB socket broadcasts this UAV's state; SUB socket receives state from other agents.
-        Both sockets use non-blocking mode with optional conflation for latest-message-only behavior.
-        
-        Args:
-            ip (str): Network IP address for ZMQ connection
-            port_pub_swarm (int): Port for publishing this UAV's state
-            port_sub_swarm (int): Port for subscribing to swarm state updates
-        
-        Returns:
-            None
-        """
-        self.pub_socket = self.zmq_ctx.socket(zmq.PUB)
-        self.pub_socket.bind(f"tcp://{ip}:{port_pub_swarm}")
-        self.pub_socket.setsockopt_string(zmq.IDENTITY, self.name)
+
+        # Defensive close if re-running multiple simulations in the same process
+        # (e.g., ablation suite). On Windows, stale sockets can keep ports busy.
+        for attr in ("sub_socket", "pub_socket"):
+            sock = getattr(self, attr, None)
+            if sock is not None:
+                try:
+                    sock.close(linger=0)
+                except Exception:
+                    pass
+
+        # IMPORTANT: In this architecture, the Swarm proxy thread binds the ports
+        # (XSUB/XPUB). UAVs must CONNECT (not bind), otherwise you'll hit
+        # EACCES/"Permission denied" on Windows when ports are already in use.
         self.sub_socket = self.zmq_ctx.socket(zmq.SUB)
         self.sub_socket.connect(f"tcp://{ip}:{port_sub_swarm}")
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "") 
-        self.sub_socket.setsockopt(zmq.RCVTIMEO, 1) 
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.sub_socket.setsockopt(zmq.RCVTIMEO, 1)
         try:
             self.sub_socket.setsockopt(zmq.CONFLATE, 1)
         except zmq.Error:
             pass
-        
+
         self.pub_socket = self.zmq_ctx.socket(zmq.PUB)
         self.pub_socket.connect(f"tcp://{ip}:{port_pub_swarm}")
-        self.pub_socket.setsockopt_string(zmq.IDENTITY, self.name)
+        self.pub_socket.setsockopt(zmq.LINGER, 0)
 
     def radar_com_setup(self, radars_list):
         """

@@ -33,3 +33,12 @@ def load_config(config_path: str = "config.yaml"):
 
     print(f"Configuration chargée depuis {config_path}")
     return config
+
+
+def save_config(config: dict, config_path: str) -> None:
+    """Save a configuration dict to YAML (UTF-8)."""
+    path = Path(config_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
+
