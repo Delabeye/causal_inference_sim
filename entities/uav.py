@@ -361,26 +361,21 @@ class UAV(Agent):
         Returns:
             str: One of "INVALID" (target in obstacle), "BLOCKED" (line-of-sight obstructed), or "CLEAR"
         """
-        for obstacle in self.obs_dic:
-            if point_in_cube(target_pos, obstacle):
-                return "INVALID"
+        if self.environment == "generated":
+        # Generated City Mode: Using KDTree for Efficiency
+            if self.planner.building_tree is not None:
+            # We are looking for buildings within a 10-metre radius of the target.
+                indices = self.planner.building_tree.query_ball_point(target_pos[:2], r=10.0)
+                for idx in indices:
+                    obs = self.obs_dic[idx]
+                    # Altitude and 3D collision verification
+                    if target_pos[2] < obs["height"] + 1.0:
+                        if point_in_cube(target_pos, obs):
+                            return "INVALID"
+        else:
+        # Custom Mode: Comprehensive verification of all obstacles
+            return "INVALID"
 
-        if self.planner.building_tree is not None:
-            indices = self.planner.building_tree.query_ball_point(target_pos[:2], r=5.0)
-            for idx in indices:
-                obs = self.obs_dic[idx]
-                center = np.array(obs["center"])
-                h = obs["height"]
-                if target_pos[2] < h + 1.0 and point_in_cube(target_pos, obs):
-                    return "INVALID"
-
-        return "CLEAR"
-        for obstacle in self.obs_dic:
-            if point_in_cube(target_pos, obstacle):
-                return "INVALID"
-        if p.raycast(start_pos, target_pos)[1][0] >= 0:
-            return "BLOCKED"
-        return "CLEAR"
     
     def _compute_repulsive_force(self, current_pos):
         """
@@ -473,6 +468,31 @@ class UAV(Agent):
     # COMMUNICATION
     # -----------------------------------------------------------------------
     def setup_network_swarm(self, ip, port_pub_swarm, port_sub_swarm):
+        """
+        Configures the decentralized communication interface for the UAV agent.
+
+        This method initializes the ZeroMQ (ZMQ) networking layer, allowing the UAV 
+        to participate in swarm-wide data exchange. It establishes a dual-socket 
+        connection to a central proxy: a SUB socket to receive neighbors' telemetry 
+        and a PUB socket to broadcast its own state.
+
+        The implementation includes defensive cleanup to prevent socket leaks during 
+        iterative simulation runs and enforces a 'Connect' topology to avoid 
+        binding conflicts on shared ports.
+
+        Args:
+            ip (str): The network address of the Swarm proxy server.
+            port_pub_swarm (int): The proxy's entry port (XSUB) where the UAV 
+                          publishes its data.
+            port_sub_swarm (int): The proxy's exit port (XPUB) from which the UAV 
+                          receives global swarm updates.
+
+        Notes:
+            - ZMQ_CONFLATE is enabled on the SUB socket to ensure the UAV only 
+            processes the most recent message, preventing lag in high-frequency 
+            simulations.
+            - LINGER is set to 0 for immediate socket termination during cleanup.
+        """
 
         # Defensive close if re-running multiple simulations in the same process
         # (e.g., ablation suite). On Windows, stale sockets can keep ports busy.

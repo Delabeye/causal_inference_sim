@@ -1,12 +1,51 @@
 import numpy as np
 
 class EKF:
+    """
+    Extended Kalman Filter (EKF) for UAV State Estimation
+    A comprehensive EKF implementation for estimating the 3D position and velocity of an 
+    Unmanned Aerial Vehicle (UAV) by fusing Inertial Measurement Unit (IMU) and Global 
+    Positioning System (GPS) data.
+    State Vector:
+        x = [x, y, z, vx, vy, vz]
+        where (x, y, z) is position in world frame and (vx, vy, vz) is velocity.
+    Key Features:
+        - IMU-aided prediction with proper coordinate frame transformations
+        - Gravity compensation for accurate acceleration measurement
+        - GPS measurement updates for position and velocity corrections
+        - Configurable process and measurement noise covariances
+        - Robust quaternion-based attitude representation
+        - Exception handling for singular matrix operations
+    Attributes:
+        dt (float): Sampling time interval (seconds)
+        x (np.ndarray): State vector [x, y, z, vx, vy, vz] (meters, m/s)
+        P (np.ndarray): State covariance matrix (6x6)
+        F (np.ndarray): State transition matrix (6x6)
+        Q (np.ndarray): Process noise covariance matrix (6x6)
+        H (np.ndarray): Measurement matrix (6x6)
+        R (np.ndarray): Measurement noise covariance matrix (6x6)
+        GRAVITY (np.ndarray): Gravitational acceleration vector [0, 0, 9.81] m/s²
+    Methods:
+        predict(imu_acc_body, orientation_quat): Predict next state using IMU acceleration
+        update(pos_meas, vel_meas): Correct state estimate using GPS measurements
+        _quat_to_rot_matrix(q): Convert quaternion to rotation matrix
+    Notes:
+        - IMU acceleration is assumed to be in the drone body frame
+        - GPS measurements are assumed to be in the world frame
+        - Gravity is automatically subtracted from IMU measurements
+        - Quaternion format: [x, y, z, w]
+    """
     def __init__(self, dt):
+        """
+        Initialize Extended Kalman Filter for 6D state tracking (position and velocity).
+        :param dt: Time step for state transition
+        """
         self.dt = dt
+        
         # State: [x, y, z, vx, vy, vz]
         self.x = np.zeros(6)
         
-        # Transition Matrix (Simple kinematics: x = x + v*dt)
+        # State transition matrix (kinematics: x_new = x + v*dt)
         self.F = np.eye(6)
         self.F[0, 3] = self.dt
         self.F[1, 4] = self.dt

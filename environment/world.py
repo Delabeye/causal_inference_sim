@@ -42,6 +42,16 @@ class World:
             - Inertial, visual, and collision properties for each building
     """
     def __init__(self, physics_client_id: int):
+        """
+        Initializes the simulation world and configures global physics parameters.
+
+        Sets the standard gravity vector, disables real-time simulation to ensure 
+        deterministic behavior, and configures internal PyBullet search paths for 
+        standard assets.
+
+        Args:
+            physics_client_id (int): The handle returned by `p.connect()`.
+        """
         self.p = p
         self.physics_client_id = physics_client_id
         self.obstacle_ids: list[int] = []
@@ -50,6 +60,32 @@ class World:
         self.p.setAdditionalSearchPath(pybullet_data.getDataPath())
         
     def generate_city_urdf(self,config):
+        """
+        Generates a procedural city environment as a single multi-link URDF file.
+
+        This method calculates a grid-based city layout consisting of blocks, roads, 
+        and buildings. It writes a XML-based URDF file where each building is 
+        modeled as a rigid link attached to a central ground plane. The buildings 
+        feature randomized heights and visual properties (colors) while maintaining 
+        precise collision geometries and inertial tensors for physics stability.
+
+        Args:
+            config (dict): Configuration parameters for the generator.
+            - filename (str): Target URDF filename (saved in 'assets/').
+            - n_blocks_x (int): Number of grid divisions along the X-axis.
+            - n_blocks_y (int): Number of grid divisions along the Y-axis.
+            - block_size (float): Dimension of a single square city block (m).
+            - road_width (float): Clearance between city blocks (m).
+            - buildings_per_side (int): Building density within a single block.
+
+        Returns:
+            list[dict]: A list of metadata for every spawned building, including 
+                geometric dimensions and absolute world coordinates for 
+                use by path-planners or sensors.
+                
+        Note:
+            Building heights are randomized to simulate an urban 'canyon' environment.
+        """
     
         filename=config.get("filename","city")
         n_blocks_x = config.get("n_blocks_x", 4)
@@ -66,8 +102,8 @@ class World:
             f.write('<?xml version="1.0" ?>\n')
             f.write('<robot name="city">\n\n')
 
-        # --- LIEN DE BASE (Le sol) ---
-        # --- SOL (ASPHALTE) ---
+        # --- BASE LINK (Ground) ---
+        # --- GROUND (ASPHALT) ---
             total_size_x = n_blocks_x * (block_size + road_width)
             total_size_y = n_blocks_y * (block_size + road_width)
         
@@ -87,29 +123,29 @@ class World:
             f.write('  </joint>\n\n')
 
             building_id = 0
-            # Espacement entre les centres des blocs
+            # Spacing between block centers
             stride = block_size + road_width
-            # Espacement entre les immeubles à l'intérieur d'un bloc
+            # Spacing between buildings inside a single block
             inner_spacing = block_size / buildings_per_side
 
-            # --- BOUCLE DES BLOCS ---
+            # --- BLOCK LOOP ---
             for bx in range(n_blocks_x):
                 for by in range(n_blocks_y):
-                    # Calcul du centre du bloc
+                    # Calculate the center of the block
                     block_center_x = (bx - n_blocks_x / 2.0) * stride + stride / 2.0
                     block_center_y = (by - n_blocks_y / 2.0) * stride + stride / 2.0
 
-                    # --- BOUCLE DES IMMEUBLES DANS LE BLOC ---
+                    # --- LOOP THROUGH BUILDINGS WITHIN THE BLOCK ---
                     for ix in range(buildings_per_side):
                         for iy in range(buildings_per_side):
                         
-                            # Hauteur aléatoire (Tours)
-                            h = round(random.uniform(30.0, 50.0),1)
-                            # Largeur ajustée pour laisser un petit espace entre immeubles
+                            # Random height (Towers)
+                            h = round(random.uniform(30.0, 50.0), 1)
+                            # Width adjusted to leave a small gap between buildings
                             w = inner_spacing * 0.9
                             d = inner_spacing * 0.9
 
-                            # Position relative au centre du bloc
+                            # Position relative to the block center
                             rel_x = (ix - buildings_per_side / 2.0) * inner_spacing + inner_spacing / 2.0
                             rel_y = (iy - buildings_per_side / 2.0) * inner_spacing + inner_spacing / 2.0
                         
@@ -118,7 +154,7 @@ class World:
                             abs_z = h / 2.0
                         
                             name = f"bld_{building_id}"
-                            color = f"{round(random.uniform(0.3, 0.6),2)} {round(random.uniform(0.3, 0.6),2)} {round(random.uniform(0.3, 0.6),2)} 1"
+                            color = f"{round(random.uniform(0.3, 0.6), 2)} {round(random.uniform(0.3, 0.6), 2)} {round(random.uniform(0.3, 0.6), 2)} 1"
 
                             buildings.append({
                             "id": building_id,
@@ -128,16 +164,16 @@ class World:
                             "length": d, # Corrected spelling
                             })
 
-                            mass = 100000.0  # Masse fixe ou calculée (ex: w * d * h * densité)
+                            mass = 100000.0  # Fixed or calculated mass (e.g., w * d * h * density)
                             ixx = (1/12.0) * mass * (d**2 + h**2)
                             iyy = (1/12.0) * mass * (w**2 + h**2)
                             izz = (1/12.0) * mass * (w**2 + d**2)
 
                             f.write(f'  <link name="{name}">\n')
                         
-                            # --- BLOC INERTIE ---
+                            # --- INERTIA BLOCK ---
                             f.write('    <inertial>\n')
-                            # On place l'origine de l'inertie au centre du lien (0 0 0)
+                            # The inertia origin is placed at the center of the link (0 0 0)
                             f.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
                             f.write(f'      <mass value="{mass}"/>\n')
                             f.write(f'      <inertia ixx="{ixx}" ixy="0" ixz="0" iyy="{iyy}" iyz="0" izz="{izz}"/>\n')
@@ -155,7 +191,7 @@ class World:
                             f.write('    </collision>\n')
                             f.write('  </link>\n')
 
-                            # Le joint reste "fixed" pour que le bâtiment ne bouge pas
+                            # The joint remains "fixed" so the building stays static
                             f.write(f'  <joint name="j_{name}" type="fixed">\n')
                             f.write('    <parent link="ground_plane"/>\n')
                             f.write(f'    <child link="{name}"/>\n')

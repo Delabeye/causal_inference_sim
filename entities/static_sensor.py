@@ -110,6 +110,6 @@ class RadarStation(Agent):
         # Publish if detections
         if detected_report:
             self.publish_detection(detected_report, sim_time)
-        
+
         # Return report for internal simulator use (if needed)
         return detected_report
