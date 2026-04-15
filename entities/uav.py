@@ -473,6 +473,8 @@ class UAV(Agent):
         # 3. Physics Application (Always 240Hz)
         # Use the last calculated RPMs to maintain stability
         self._apply_lib_physics(self.last_rpms, gt)
+        # 4. Add the current row in the drone logs (CHANGEMENT)
+        self._log_full_state(gt)
 
 
     def _update_control_loop(self,gt):
