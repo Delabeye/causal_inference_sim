@@ -1,1 +1,0 @@
-time,gt_x,gt_y,gt_z,gt_vx,gt_vy,gt_vz,meas_x,meas_y,meas_z,gnss_error_mag,wind_x,wind_y,wind_z,wind_mag,rep_force_mag,nearest_neighbor_dist,target_x,target_y,target_z,tracking_error_mag,collision_flag
