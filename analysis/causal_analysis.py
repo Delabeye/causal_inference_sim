@@ -59,6 +59,7 @@ import networkx as nx
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from egnn_pytorch import EGNN
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -542,6 +543,133 @@ class NRIModel(nn.Module):
             s_t = s_window[:, t+1, :, :]  # teacher forcing
         s_pred = torch.stack(preds, dim=1)  # [B,L-1,N,S]
         return s_pred, z, logits
+
+
+class VAEEncoder(nn.Module):
+    """ 
+    Pour l'instant mon state_dim est seulement vel, puisque pos n'est pas pris en compte dans la première
+    couche Linear afin de garantir l'équivariance dans l'EGNN (state_dim = vel_norm_dim = 1).
+    """
+    def __init__(self, window_size: int, vel_dim: int, exog_dim: int, hidden_dim: int, z_dim: int, dropout: float = 0.0):
+        super().__init__()
+        self.exog_dim = exog_dim
+        self.hidden_dim = hidden_dim
+        self.z_dim = z_dim
+
+        input_dim = window_size * (vel_dim + exog_dim)
+
+        #On crée le réseau
+        self.raw2hidden = nn.Sequential( 
+        nn.Linear(input_dim, hidden_dim),
+        nn.ReLU(),
+        nn.Linear(hidden_dim, hidden_dim)
+        )
+
+        self.egnn = EGNN(dim = hidden_dim, m_dim = 64, update_coors=True) 
+        
+        self.fc_mu = nn.Linear(hidden_dim, z_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, z_dim)
+
+
+    def forward(self, pos_t, vel_win, exog_win):
+        """
+        pos_win : [B, W, N, 3]   W = window_size
+        vel_win : [B, W, N, 3]
+        exog_win : wind [B, W, N, exog_size]
+        x_out : [B, N, 3] = pos + v_modele (instant t+1)
+
+        Je pars du principe qu'on a traité pos_win vel_win et exog_win avec 
+        temp : [B, N, W * (vel_size + exog_size)]
+        pos_t : [B, N, 3]
+        """
+
+        # A MODIFIER : Faire une fonction dans le modele complet
+        
+        vel_norms = torch.norm(vel_win, dim=-1)
+        exog_norms = torch.norm(exog_win, dim=-1)
+        vel_t = vel_win[:, -1, :, :] 
+        wind_t = exog_win[:, -1, :, :]
+        v_in = vel_t + wind_t # [B, N, 3] On veut le vecteur général du drone
+        
+        # Taille: [Batch, Window, N, 2]
+        scalaires = torch.cat([vel_norms.unsqueeze(-1), exog_norms.unsqueeze(-1)], dim=-1) 
+
+        # [Batch, Window, N, 2] --> [Batch, N, Window, 2]
+        scalaires = scalaires.transpose(1, 2) 
+        
+        # Taille finale : [Batch, N, Window * 2]
+        h_in_brut = scalaires.flatten(start_dim=2) 
+
+        h_in = self.raw2hidden(h_in_brut) 
+        h_out, pos_out = self.egnn(h=h_in, x=pos_t, edges=None, v_in=v_in)
+        mu = self.fc_mu(h_out)
+        logvar = self.fc_logvar(h_out)
+
+        return mu, logvar
+
+
+# A modifier (Comprendre la théorie derrière surtout et ce que je cherche à calculer/trouver)
+
+class VAEDecoder(nn.Module):
+    def __init__(self, z_dim: int, hidden_dim: int, dropout: float = 0.0):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.z_dim = z_dim
+
+        self.egnn = EGNN(self, dim = z_dim, m_dim = hidden_dim, update_coors= True, soft_edges = True)
+
+    def forward(self, z, pos):
+        """
+        z : Après le reparam trick [B, N, z_dim]
+        exog_next : Le vent à l'instant t+1 [B, N, exog_dim]
+        """
+
+        h_out, pos_next, edges_scores = self.egnn(h = z, x = pos)
+        return pos_next, edges_scores
+    
+
+
+class VAEModel(nn.Module):
+    def __init__(self, n_nodes: int, window_size: int, vel_dim: int, exog_dim: int, hidden_dim: int = 128, latent_dim: int = 16, dropout: float = 0.0):
+        super().__init__()
+        self.n_nodes = n_nodes
+        self.window_size = window_size    # En delta_t
+        self.exog_dim = exog_dim
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+
+        self.encoder = VAEEncoder(n_nodes, window_size, vel_dim, exog_dim, hidden_dim, latent_dim, dropout)
+        self.decoder = VAEDecoder(n_nodes, vel_dim, exog_dim, hidden_dim, latent_dim, dropout)
+
+    def reparam_trick(self, mu, logvar):
+        """
+        With this method, z = mu + eps*std
+        """
+        # L'astuce de reparamétrisation : z = mu + std * epsilon
+
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+
+            eps = torch.randn_like(std)
+
+            return mu + eps * std
+
+        else:
+            return mu
+        
+    def data_transfo(self, pos_win, vel_win, exog_win):
+        pos = []
+        vel = []
+        exog = []
+        temp = []
+        return pos, temp
+        
+    def forward(self, pos_win, vel_win, exog_win, edges):
+        pos, temp = self.data_transfo(pos_win, vel_win, exog_win)
+        mu, logvar = self.encoder(pos, temp, edges)
+        z = self.reparam_trick(mu, logvar)
+
+        
 
 
 # ---------------------------
