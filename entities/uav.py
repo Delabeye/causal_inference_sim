@@ -170,7 +170,8 @@ class UAV(Agent):
         
         # --- CAUSAL ANALYSIS & LOGGING SETUP ---
         self.logging_enabled = True
-        self.log_file = os.path.join("logs", f"{self.name}.csv")
+        self.runId = self.config.get("run_config", 0)
+        self.log_file = os.path.join("logs", f"run_{self.runId}_{self.name}.csv")
         os.makedirs("logs", exist_ok=True)
         if os.path.exists(self.log_file): os.remove(self.log_file)
 
@@ -191,26 +192,6 @@ class UAV(Agent):
             "tracking_error_mag",
             "collision_flag"                # Flags
         ]
-
-        """
-        # Header complet pour l'analyse causale
-        with open(self.log_file, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "time", 
-                "gt_x", "gt_y", "gt_z",         # Ground Truth
-                "gt_vx", "gt_vy", "gt_vz",      
-                "meas_x", "meas_y", "meas_z",   # Sensors
-                "gnss_error_mag",
-                "wind_x", "wind_y", "wind_z",   # Environment
-                "wind_mag",
-                "rep_force_mag",                # Interaction
-                "nearest_neighbor_dist",
-                "target_x", "target_y", "target_z", # Intent
-                "tracking_error_mag",
-                "collision_flag"                # Flags
-            ])
-        """
 
         # Variables internes pour le logging
         self.last_repulsive_force_mag = 0.0
@@ -713,7 +694,6 @@ class UAV(Agent):
         except:
             pass 
 
-# Changer la façon d'écrire le CSV, ne pas ouvrir et fermer en boucle le fichier, consomme trop
     def _log_full_state(self, gt):
         """
         Logging avancé pour l'analyse causale sans perturber l'affichage console.

@@ -1,6 +1,7 @@
 # utilities/config.py
 import yaml
 from pathlib import Path
+import os
 
 
 def load_config(config_path: str = "config.yaml"):
@@ -46,3 +47,23 @@ def load_config(config_path: str = "config.yaml"):
 
     print(f"Configuration loaded from {config_path}")
     return config
+
+
+def save_config(config_dict: dict, config_path: str): 
+    """
+    Saving the .yaml file in logs
+    
+    """
+    if os.path.exists(config_path): os.remove(config_path)
+    
+    with open(config_path, "w") as yaml_file:
+        yaml.dump(
+            config_dict, 
+            yaml_file, 
+            default_flow_style=False,  # Forces the clean, multi-line block style
+            sort_keys=False            # Keeps your original dictionary order
+        )
+
+    print(f"YAML successfully saved to: {config_path}")
+
+    return(config_path)

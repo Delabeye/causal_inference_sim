@@ -3,6 +3,8 @@ import time
 import numpy as np
 import pybullet as p
 import pybullet_data
+import json
+import os
 
 from environment.world import World
 from entities.uav import UAV
@@ -44,6 +46,7 @@ class SimulationManager:
 
     def __init__(self, config: dict):
         self.config = config
+        self.sim_time = 0.0
         self.dt = float(self.config["simulation"]["dt"])
         # 1. Connexion PyBullet
         mode_str = str(self.config["simulation"]["connect_mode"]).strip().lower()
@@ -51,6 +54,9 @@ class SimulationManager:
         self.physics_client_id = p.connect(mode)
         if self.physics_client_id < 0:
             raise ConnectionError("Impossible de se connecter à PyBullet.")
+        
+        # Pour le bon fonctionnement des logs d'entrainement
+        self.is_gui_mode = True if mode_str == "gui" else False
 
         print(f"Connecté à PyBullet, client_id={self.physics_client_id}")
 
@@ -273,16 +279,82 @@ class SimulationManager:
             )
             self.swarms.append(new_swarm)
         
+    
 
+    # ------------------------------------------------------------------
+    def save_state(self, filepath: str = r"saves/save_state"):
+        
+        os.makedirs("saves", exist_ok=True)
+
+        bullet_file = f"{filepath}.bullet"
+        json_file = f"{filepath}.json"
+
+        try:
+            p.saveBullet(bullet_file, physicsClientId = self.physics_client_id)
+        except p.error as e:
+            print(f"Erreur lors du chargement: {e}")
+            return
+        
+        print(f"Etat physique sauvegardé dans : {filepath}")
+
+
+        logic_state = {
+            "sim_time": self.sim_time, 
+            "agents": {}
+        
+        }
+        # On récupère l'état de chaque agent
+        for idx, agent in enumerate(self.agents):
+            if hasattr(agent, "get_state"):
+                logic_state["agents"][idx] = agent.get_state()
+
+        with open(json_file, 'w') as f:
+            json.dump(logic_state, f, indent=4)
+
+        print(f"Sauvegarde réussie : {bullet_file} et {json_file}")
+
+        
+    
+    # ------------------------------------------------------------------
+    def load_state(self, filepath: str = "save_state"):
+
+        bullet_file = f"{filepath}.bullet"
+        json_file = f"{filepath}.json"
+
+        try:
+            p.restoreState(filename = bullet_file, physicsClientId = self.physics_client_id)
+        except p.error as e:
+            print(f"Erreur lors du chargement : {e}")
+            return
+        
+        if os.path.exists(json_file):
+            with open(json_file, 'r') as f:
+                logic_state = json.load(f)
+            
+            self.sim_time = logic_state.get("sim_time", 0.0)
+
+            saved_agents = logic_state.get("agents", {})
+            for str_idx, agent_state in saved_agents.items():
+                idx = int(str_idx)
+                if idx < len(self.agents):
+                    agent = self.agents[idx]
+                    if hasattr(agent, "load_state"):
+                        agent.load_state(agent_state)
+
+            print(f"Chargement de la save réussi")
+        else:
+            print(f"Echec du chargment de : {json_file}. Seule la physique a été chargée.")
+    
+
+    
     # ------------------------------------------------------------------
     def run(self):
         """
         Boucle principale de simulation.
         """
-        sim_time = 0.0
         max_time = float(self.config["simulation"]["max_sim_time"])
 
-        while sim_time < max_time and p.isConnected(self.physics_client_id):
+        while self.sim_time < max_time and p.isConnected(self.physics_client_id):
             # 1. Mise à jour des essaims (leader/followers) si activés
             for swarm in self.swarms:
                 swarm.update()
@@ -293,22 +365,51 @@ class SimulationManager:
                     agent.think_and_act()
 
                 elif agent.type=="radar":
-                    if sim_time > agent.radar_period + agent.radar_last_time:
-                        agent.radar_last_time = sim_time
-                        agent.think_and_act(sim_time)
+                    if self.sim_time > agent.radar_period + agent.radar_last_time:
+                        agent.radar_last_time = self.sim_time
+                        agent.think_and_act(self.sim_time)
             # 3. Avancer la physique
             p.stepSimulation(physicsClientId=self.physics_client_id)
 
             # 4. Real time
-            time.sleep(self.dt)
-            sim_time += self.dt
+            if self.is_gui_mode:
+                time.sleep(self.dt)
+
+            self.sim_time += self.dt
+
+            
 
     # ------------------------------------------------------------------
     def stop(self):
+        for agent in self.agents:
+            if agent.type == "uav":
+                if not os.path.exists(agent.log_file):
+                    agent.write_csv()
+
+        for swarm in self.swarms:
+                swarm.cleanup()
+
         if p.isConnected(self.physics_client_id):
             print("Déconnexion de PyBullet.")
             p.disconnect(self.physics_client_id)
-            for swarm in self.swarms:
-                swarm.cleanup()
+        
 
-    
+    def it_stop(self, ind: int):
+
+        for agent in self.agents:
+            if agent.type == "uav":
+                if not os.path.exists(agent.log_file):
+                    agent.write_csv()
+
+        for swarm in self.swarms:
+                swarm.cleanup()
+        
+
+        self.config["simulation"]["run_config"] = ind
+        for agent_cfg in self.config.get("agents", []):
+            agent_cfg["run_config"] = ind
+
+        if p.isConnected(self.physics_client_id):
+            print("Déconnexion de PyBullet.")
+            p.disconnect(self.physics_client_id)
+        return(self.config)
