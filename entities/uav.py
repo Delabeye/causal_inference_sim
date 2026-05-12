@@ -173,7 +173,26 @@ class UAV(Agent):
         self.log_file = os.path.join("logs", f"{self.name}.csv")
         os.makedirs("logs", exist_ok=True)
         if os.path.exists(self.log_file): os.remove(self.log_file)
-        
+
+        # Test pour optimiser l'écriture du CSV
+        self.log_data_buffer = []
+        # Header complet pour l'analyse causale
+        self.log_header = [
+            "time", 
+            "gt_x", "gt_y", "gt_z",         # Ground Truth
+            "gt_vx", "gt_vy", "gt_vz",      
+            "meas_x", "meas_y", "meas_z",   # Sensors
+            "gnss_error_mag",                
+            "wind_x", "wind_y", "wind_z",   # Environment
+            "wind_mag",
+            "rep_force_mag",                # Interaction
+            "nearest_neighbor_dist",
+            "target_x", "target_y", "target_z", # Intent                
+            "tracking_error_mag",
+            "collision_flag"                # Flags
+        ]
+
+        """
         # Header complet pour l'analyse causale
         with open(self.log_file, "w", newline="") as f:
             writer = csv.writer(f)
@@ -191,6 +210,7 @@ class UAV(Agent):
                 "tracking_error_mag",
                 "collision_flag"                # Flags
             ])
+        """
 
         # Variables internes pour le logging
         self.last_repulsive_force_mag = 0.0
@@ -469,12 +489,15 @@ class UAV(Agent):
         # 2. Logic Schedule (100 Hz)
         if (self._sim_time - self.last_ctrl_time) >= self.CTRL_DT:
             self._update_control_loop(gt)
+
+            # Add the current row in the drone logs (CHANGEMENT)
+            self._log_full_state(gt)
+
             self.last_ctrl_time = self._sim_time
         # 3. Physics Application (Always 240Hz)
         # Use the last calculated RPMs to maintain stability
         self._apply_lib_physics(self.last_rpms, gt)
-        # 4. Add the current row in the drone logs (CHANGEMENT)
-        self._log_full_state(gt)
+        
 
 
     def _update_control_loop(self,gt):
@@ -690,6 +713,7 @@ class UAV(Agent):
         except:
             pass 
 
+# Changer la façon d'écrire le CSV, ne pas ouvrir et fermer en boucle le fichier, consomme trop
     def _log_full_state(self, gt):
         """
         Logging avancé pour l'analyse causale sans perturber l'affichage console.
@@ -706,25 +730,42 @@ class UAV(Agent):
         wind_mag = np.linalg.norm(self.current_wind)
         tracking_error = np.linalg.norm(np.array(gt["pos"]) - np.array(self.current_target_pos))
 
-        with open(self.log_file, "a", newline="") as f:
-            row = [
-                round(self._sim_time, 3),
-                # Ground Truth
-                *gt["pos"], *gt["vel"],
-                # Sensors
-                *meas_pos,
-                gnss_error,
-                # Env
-                *self.current_wind,
-                wind_mag,
-                # Interaction
-                round(self.last_repulsive_force_mag, 3),
-                round(self.dist_to_nearest_neighbor, 3),
-                # Intent
-                *self.current_target_pos,
-                tracking_error,
-                collision_flag
-            ]
-            # Clean float formatting
-            row = [x if isinstance(x, (int, str)) else round(float(x), 4) for x in row]
-            csv.writer(f).writerow(row)
+        # with open(self.log_file, "a", newline="") as f:
+        row = [
+            round(self._sim_time, 3),
+            # Ground Truth
+            *gt["pos"], *gt["vel"],
+            # Sensors
+            *meas_pos,
+            gnss_error,
+            # Env
+            *self.current_wind,
+            wind_mag,
+            # Interaction
+            round(self.last_repulsive_force_mag, 3),
+            round(self.dist_to_nearest_neighbor, 3),
+            # Intent
+            *self.current_target_pos,
+            tracking_error,
+            collision_flag
+        ]
+        # Clean float formatting
+        self.log_data_buffer.append(row)
+        
+
+
+    # Ferme le fichier csv à la fin de la simulation
+    def write_csv(self):
+
+        print(f"[{self.name}] Sauvegarde de {len(self.log_data_buffer)} lignes dans le CSV...")
+
+        with open(self.log_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(self.log_header)
+
+            for row in self.log_data_buffer:
+                formatted_row = [x if isinstance(x, (int, str)) else round(float(x), 4) for x in row]
+                writer.writerow(formatted_row)
+
+        self.log_data_buffer.clear()
+        print(f"[{self.name}] Sauvegarde CSV terminée.")
