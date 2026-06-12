@@ -6,10 +6,20 @@ import time
 import os
 
 
-def run_batch_simu(start_config, n_run):
-    if n_run == 1:
-        config = load_config("config.yaml")
+BASIC_CONFIG_PATH = "config.yaml"
+RUN_SIM_GUI = 1
 
+
+LOG_NUMBERS = 1
+
+
+def run_batch_simu(n_run):
+
+    config = load_config("config.yaml")
+
+# Simulation avec interface 
+    if n_run == 1:
+        
         # For safety, we verify it's a dict
         if config is None:
             raise RuntimeError(
@@ -28,22 +38,23 @@ def run_batch_simu(start_config, n_run):
                 sim.stop()
                 while p.isConnected():
                     time.sleep(0.1)
+                return
 
         finally:
-            sim.stop()
+            if p.isConnected():
+                sim.stop()
+
+# Création de logs en batch
 
     else:
-        config = load_config(start_config)
-        ini_compteur = config["simulation"]["run_config"]
-        if start_config == "config.yaml":
-            config["simulation"]["connect_mode"] = "direct"
-
+        config["simulation"]["connect_mode"] = "direct"
+        sim = SimulationManager(config)
+        init_compteur = config["simulation"]["run_config"]
+        
         for ind in range(1, n_run+1):
-            run_config = config.copy()
 
             print(f"\n SIMULATION {ind}")
-
-            sim = SimulationManager(run_config)
+            
 
             try:
                 sim.run()
@@ -52,19 +63,25 @@ def run_batch_simu(start_config, n_run):
                 print(f"Erreur pendant la simulation {ind} : {e}")
 
             finally:
-                run_config = sim.it_stop(ini_compteur + ind)
                 print(f"Simulation {ind} finished.")
+                sim.it_stop(init_compteur + ind)
     
                 # Mettre à jour la config pour continuer de print
-                config_saving_path = os.path.join("logs", f"config_{ini_compteur + ind}.yaml")
-                config = load_config(save_config(run_config, config_saving_path))
+            # config_saving_path = os.path.join("logs/config_save", f"config_{ini_compteur + ind}.yaml")
+            # config = load_config(save_config(run_config, config_saving_path))
+                sim.reset()
 
         print("Fin de toutes les simulations.")
+        sim.disconnect()
 
 
+
+
+# ------------------------------------------------------------------
 def main():
 
-    run_batch_simu("config.yaml", 2)
+    run_batch_simu(LOG_NUMBERS)
+
 
 if __name__ == "__main__":
     main()

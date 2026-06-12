@@ -5,12 +5,14 @@ import pybullet as p
 import pybullet_data
 import json
 import os
+import re
 
 from environment.world import World
 from entities.uav import UAV
 from swarm.swarm import Swarm
 from entities.static_sensor import RadarStation
 from Control.Path_planning import HeightmapAStar 
+from swarm.swarmnetwork import SwarmNetwork
 
 class SimulationManager:
     """SimulationManager
@@ -46,6 +48,27 @@ class SimulationManager:
 
     def __init__(self, config: dict):
         self.config = config
+
+        # On allume le proxy pour toutes les simulation
+        self.network = SwarmNetwork(port_in=5556, port_out=5557)
+        self.network.init_proxy()
+
+        # Auto-détection de la run 
+        log_dir = "logs"
+        next_run_id = 0
+        if os.path.exists(log_dir):
+            for filename in os.listdir(log_dir):
+                match = re.search(r'run_(\d+)', filename)
+                if match:
+                    run_id = int(match.group(1))
+                    if run_id >= next_run_id:
+                        next_run_id = run_id + 1
+
+        self.config["simulation"]["run_config"] = next_run_id
+        for agent_cfg in self.config.get("agents", []):
+            agent_cfg["run_config"] = next_run_id
+
+
         self.sim_time = 0.0
         self.dt = float(self.config["simulation"]["dt"])
         # 1. Connexion PyBullet
@@ -57,6 +80,8 @@ class SimulationManager:
         
         # Pour le bon fonctionnement des logs d'entrainement
         self.is_gui_mode = True if mode_str == "gui" else False
+        # Gerer la pause la simulation
+        self.is_paused = False
 
         print(f"Connecté à PyBullet, client_id={self.physics_client_id}")
 
@@ -77,6 +102,13 @@ class SimulationManager:
                 cameraTargetPosition=[0.0, 1.0, 1.0],
                 physicsClientId=self.physics_client_id,
             )
+
+            # Boutton pause et quit
+            # self.btn_pause = p.addUserDebugParameter("Pause / Play", 1, -1, 1, physicsClientId = self.physics_client_id)
+            # self.btn_quit = p.addUserDebugParameter("Quit Simulation", 1, -1, 1, physicsClientId = self.physics_client_id)
+
+            # self.count_pause_clicks = 0
+            # self.count_quit_click = 0
 
         # Liste de tous les agents (UAV + radars)
         self.agents: list[UAV | RadarStation] = []
@@ -128,7 +160,7 @@ class SimulationManager:
             )
             self.planner = HeightmapAStar(
             self.obstacles_config.get("Astar",{}),
-            resolution=res, 
+            resolution=res 
             )
             self.planner.custom_heightmap()
         # Drones
@@ -262,8 +294,6 @@ class SimulationManager:
             avoid_gain = float(specific_cfg.get("avoid_gain", 0.5))
             
             # Paramètres Réseau
-            port_in = int(specific_cfg.get("port_in", 5556))
-            port_out = int(specific_cfg.get("port_out", 5557))
             ip = specific_cfg.get("ip", "localhost")
 
             # Création de l'instance
@@ -273,8 +303,8 @@ class SimulationManager:
                 formation_body_offsets = None,
                 min_sep=min_sep,
                 avoid_gain=avoid_gain,
-                port_in=port_in,
-                port_out=port_out,
+                port_in=self.network.port_in,
+                port_out=self.network.port_out,
                 ip=ip
             )
             self.swarms.append(new_swarm)
@@ -282,14 +312,17 @@ class SimulationManager:
     
 
     # ------------------------------------------------------------------
-    def save_state(self, filepath: str = r"saves/save_state"):
+    def save_state(self, filename: str):
         
         os.makedirs("saves", exist_ok=True)
+        filepath = os.path.join("saves", f"{filename}")
+        if os.path.exists(filepath): os.remove(filepath)
 
         bullet_file = f"{filepath}.bullet"
         json_file = f"{filepath}.json"
 
         try:
+            state_id = p.saveState()
             p.saveBullet(bullet_file, physicsClientId = self.physics_client_id)
         except p.error as e:
             print(f"Erreur lors du chargement: {e}")
@@ -316,7 +349,7 @@ class SimulationManager:
         
     
     # ------------------------------------------------------------------
-    def load_state(self, filepath: str = "save_state"):
+    def load_state(self, filepath: str):
 
         bullet_file = f"{filepath}.bullet"
         json_file = f"{filepath}.json"
@@ -353,29 +386,71 @@ class SimulationManager:
         Boucle principale de simulation.
         """
         max_time = float(self.config["simulation"]["max_sim_time"])
+        save_compteur = 0
 
         while self.sim_time < max_time and p.isConnected(self.physics_client_id):
+
+            # Keyboard button, keys est un dictionnaire
+            keys = p.getKeyboardEvents(physicsClientId = self.physics_client_id)
+
+            # Touche Espace
+            if keys.get(32) == 1:
+                self.is_paused = not self.is_paused
+                print(f"Pause via Clavier : {self.is_paused}")
+            
+            # Appuyer sur q en AZERTY
+            if keys.get(97) == 1:
+                print("Arrêt de la simulation")
+                break
+
+            # Sauvegarder avec s
+            if keys.get(115) == 1:
+                print(f"Sauvegarde {save_compteur} à l'instant t={self.sim_time}s")
+                save_file_path = f"run_{self.config["simulation"]["run_config"]}_save_state_{save_compteur}"
+                # Seulement mettre le nom du fichier
+                self.save_state(save_file_path)
+                save_compteur += 1
+
+            # GUI button pause/play and quit simulation
+            # if self.is_gui_mode:
+            #     pause_click = p.readUserDebugParameter(self.btn_pause, physicsClientId = self.physics_client_id)
+            #     quit_clicks = p.readUserDebugParameter(self.btn_quit, physicsClientId = self.physics_client_id)
+
+            #     if quit_clicks > self.count_quit_click:
+            #         print("\n Button QUIT pressed. Stopping the simulation")
+            #         break
+                
+            #     if pause_click > self.count_pause_clicks:
+            #         self.is_paused = not self.is_paused
+            #         self.count_pause_clicks = pause_click
+            #         etat = "PAUSED" if self.is_paused else "PLAYING"
+            #         print(f"\n Simulation {etat} (t={round(self.sim_time, 2)}s)")
+
+
             # 1. Mise à jour des essaims (leader/followers) si activés
-            for swarm in self.swarms:
-                swarm.update()
+            if not self.is_paused:
+                for swarm in self.swarms:
+                    swarm.update()
 
-            # 2. Contrôle de chaque drone
-            for agent in self.agents:
-                if agent.type=="uav":
-                    agent.think_and_act()
+                # 2. Contrôle de chaque drone
+                for agent in self.agents:
+                    if agent.type=="uav":
+                        agent.think_and_act()
 
-                elif agent.type=="radar":
-                    if self.sim_time > agent.radar_period + agent.radar_last_time:
-                        agent.radar_last_time = self.sim_time
-                        agent.think_and_act(self.sim_time)
-            # 3. Avancer la physique
-            p.stepSimulation(physicsClientId=self.physics_client_id)
+                    elif agent.type=="radar":
+                        if self.sim_time > agent.radar_period + agent.radar_last_time:
+                            agent.radar_last_time = self.sim_time
+                            agent.think_and_act(self.sim_time)
+                # 3. Avancer la physique
+                p.stepSimulation(physicsClientId=self.physics_client_id)
+                self.sim_time += self.dt
 
-            # 4. Real time
+
+
+                # 4. Real time
             if self.is_gui_mode:
                 time.sleep(self.dt)
 
-            self.sim_time += self.dt
 
             
 
@@ -392,8 +467,13 @@ class SimulationManager:
         if p.isConnected(self.physics_client_id):
             print("Déconnexion de PyBullet.")
             p.disconnect(self.physics_client_id)
-        
 
+        self.network.stop_proxy()
+
+
+
+        
+    # ------------------------------------------------------------------
     def it_stop(self, ind: int):
 
         for agent in self.agents:
@@ -410,6 +490,48 @@ class SimulationManager:
             agent_cfg["run_config"] = ind
 
         if p.isConnected(self.physics_client_id):
-            print("Déconnexion de PyBullet.")
+            print(f"Reset de PyBullet pour la fin de la run {ind}.")
+
+        # return(self.config)
+        
+    
+    def initialisation(self):
+        self.sim_time = 0.0
+
+        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        p.setGravity(
+            *self.config["physics"]["gravity"],
+            physicsClientId=self.physics_client_id,
+        )
+
+        # 2. Monde (sol + obstacles)
+        self.world = World(self.physics_client_id)
+
+        # Liste de tous les agents (UAV + radars)
+        self.agents: list[UAV | RadarStation] = []
+
+        # Liste des essaims (on n'en crée qu'un, mais on garde une liste)
+        self.swarms: list[Swarm] = []
+        
+        # Liste des radars
+        self.radars: list[RadarStation] = []
+        
+        # 3. Charger scénario (obstacles + drones + objectifs éventuels)
+        self.load_scenario()
+
+        # 4. Créer un essaim si demandé dans la config
+        self._create_swarm_from_config()
+
+
+    def reset(self):
+        p.resetSimulation(self.physics_client_id)
+        self.initialisation()
+        
+        
+        
+    
+    def disconnect(self):
+        if p.isConnected(self.physics_client_id):
             p.disconnect(self.physics_client_id)
-        return(self.config)
+            print("Déconnection de PyBullet")
+        self.network.stop_proxy()

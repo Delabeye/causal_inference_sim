@@ -1,58 +1,15 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-causal_analysis.py
-
-Analyse causale poussée pour réseaux UxS (essaim de drones) :
-- Détection d'échecs (collisions, perte de formation, trajectoires sous-optimales,
-  dégradation GNSS, pertes dues au vent).
-- Inférence d'un graphe d'interactions inter-drones via Neural Relational Inference (NRI).
-- Scores de causalité complémentaires (Granger) pour facteurs exogènes (vent, GNSS).
-- Attribution probabiliste de causes potentielles par événement.
-
-Ce script est conçu pour fonctionner directement avec les logs CSV générés par le projet
-(entities/uav.py : logs/drone_*.csv), mais reste générique.
-
-Références (implémentation inspirée des architectures NRI classiques) :
-- Kipf et al., "Neural Relational Inference for Interacting Systems", ICML 2018.
-- Dépôt PyTorch NRI (Fetaya et al.) : https://github.com/ethanfetaya/NRI
-- Granger causality (statsmodels) : https://www.statsmodels.org/
-
-Sorties :
-- Matrices (CSV/NPY) : influence drones→drones, influences signées, impacts systémiques.
-- Figures (PNG) : heatmaps, graphes orientés, séries temporelles de proba d'événements,
-  attribution de causes.
-
-Usage rapide (depuis la racine du projet) :
-    python analysis/causal_analysis.py --log_dir logs --output_dir causal_out
-
-Ajuster la vitesse/qualité :
-    python analysis/causal_analysis.py --downsample 4 --nri_steps 1500 --seq_len 30
-
-Notes :
-- NRI ici est "unsupervised" au sens où il apprend le graphe latent en minimisant l'erreur
-  de prédiction dynamique (next-step prediction) sur les états observés.
-- Les "probabilités de causes" sont des probabilités *potentielles* (root-cause hypothesis),
-  obtenues par un modèle explicatif (logistic regression) + agrégation par groupe de facteurs.
-"""
-
-from __future__ import annotations
-
+import pandas as pd
+import os
+import re
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+import random
 import argparse
 import json
-import math
-import os
-import random
-import warnings
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-import re
 
 import numpy as np
-import pandas as pd
 
 import matplotlib
-matplotlib.use("Agg")  # safe for headless
 import matplotlib.pyplot as plt
 
 import networkx as nx
@@ -60,12 +17,10 @@ import networkx as nx
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from egnn_pytorch import EGNN
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from statsmodels.tsa.stattools import grangercausalitytests
 
 
 # ---------------------------
@@ -93,8 +48,6 @@ def set_torch_threads(n: int) -> None:
     except Exception:
         pass
 
-
-
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
@@ -118,15 +71,11 @@ def robust_zscore(x: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     return 0.6745 * (x - med) / mad
 
 
-# ---------------------------
-# Data loading and features
-# ---------------------------
-
 @dataclass
 class SwarmLogs:
     times: np.ndarray                 # [T]
     drone_names: List[str]            # [N]
-    data: Dict[str, np.ndarray]       # key -> [T, N, dim] or [T, N]
+    data: Dict[str, List[np.ndarray]]       # key -> nb_run*[T, N, dim] or [T, N]
     dt: float
 
 
@@ -152,12 +101,18 @@ def load_swarm_logs(log_dir: str, downsample: int = 1) -> SwarmLogs:
         raise FileNotFoundError(
             f"Aucun fichier logs 'run_*.csv' trouvé dans: {log_dir}"
         )
+    
+    # Changement dans la lecture des logs, regroupement des logs dans un dictionnaire pour un même drone
+    drone_groups = {}
+    # drone_groups : dict[drone_x, df] de taille [nb drones, nb run]
+    # On fait en sorte que chaque run soit bien l'index des valeurs du dictionnaire
+    # Par construction cela ne devrait pas causer de problème
+    # E.G : dict["drone_0"]["1"] -> run 1
 
-    dfs = []
-    names = []
     for p in paths:
         brut_name = os.path.splitext(os.path.basename(p))[0]
         match = re.search(r'(drone_\d+)', brut_name)
+        # Je récupère 'drone_x' de la run_y avec x, y croissants
         drone_id = match.group(1) if match else brut_name
 
         df = pd.read_csv(p)
@@ -170,64 +125,86 @@ def load_swarm_logs(log_dir: str, downsample: int = 1) -> SwarmLogs:
             df = df.iloc[::downsample].reset_index(drop=True)
         df.ffill(inplace=True)
         df.bfill(inplace=True)
-        dfs.append(df)
-        names.append(os.path.splitext(os.path.basename(p))[0])
+
+        if drone_id not in drone_groups:
+            drone_groups[drone_id] = []
+        drone_groups[drone_id].append(df)
+        
+        
+    # Permet de trier les indices des drones dans l'ordre croissant
+    names = sorted(drone_groups.keys(), key= lambda x: int(re.search(r'\d+', x).group()))
+        
 
     # Align by time (inner join on rounded time)
     # times are already rounded to 0.001 in logs; still, we align robustly.
-    base = dfs[0][["time"]].copy()
+    run_drone_0_list = drone_groups["drone_0"]
+    df_run = run_drone_0_list[0]
+    base = df_run[["time"]].copy()
     base["time"] = base["time"].round(3)
 
-    aligned = [base]
-    for df in dfs:
-        tmp = df.copy()
-        tmp["time"] = tmp["time"].round(3)
-        aligned.append(tmp)
+    # On récupère l'intersection de tous les temps de tous les CSV de chaque drone
+    aligned_time = base["time"].tolist()
+    for drone_id in names:
+        for df in drone_groups[drone_id]:
+            ensemble_temps = list(set(aligned_time) & set(df["time"].round(3)))
+            aligned_time = ensemble_temps
 
-    # Keep intersection of times across all drones
-    common_times = aligned[1]["time"].to_numpy()
-    for k in range(2, len(aligned)):
-        common_times = np.intersect1d(common_times, aligned[k]["time"].to_numpy())
+    aligned_time = sorted(aligned_time) # list
+    aligned_time = np.array(aligned_time, dtype=np.float32)
+    
+    # On traite les lignes en trop pour que chaque CSV aient les mêmes timestamps
+    # Pour l'instant je pars du principe que tous les temps sont alignés en gros il faut finir
+    # Le dfs2 c'est une run avec tous les drones qui ont été réindexés
 
-    if len(common_times) < 10:
-        raise ValueError(
-            "Trop peu de timestamps communs entre drones. "
-            "Vérifie que les logs proviennent de la même simulation."
-        )
-
-    # Reindex each df on common times
-    dfs2 = []
-    for df in dfs:
-        tmp = df.copy()
-        tmp["time"] = tmp["time"].round(3)
-        tmp = tmp.set_index("time").loc[common_times].reset_index()
-        tmp.ffill(inplace=True)
-        tmp.bfill(inplace=True)
-        dfs2.append(tmp)
-
-    times = dfs2[0]["time"].values.astype(np.float32)
-    if len(times) >= 2:
-        dt = float(np.median(np.diff(times)))
+    
+    if len(aligned_time) >= 2:
+        dt = float(np.median(np.diff(aligned_time)))
     else:
         dt = 0.1
 
-    # Stack fields
-    def stack_cols(cols: List[str]) -> np.ndarray:
-        arrs = []
-        for df in dfs2:
-            arr = df[cols].values.astype(np.float32)
-            arrs.append(arr)
-        # arrs: list of [T, len(cols)]
-        return np.stack(arrs, axis=1)  # [T, N, len(cols)]
 
-    def stack_col(col: str) -> np.ndarray:
-        arrs = []
-        for df in dfs2:
-            arr = df[col].values.astype(np.float32)
-            arrs.append(arr)
-        return np.stack(arrs, axis=1)  # [T, N]
+    nb_runs = len(drone_groups[names[0]])
 
-    data: Dict[str, np.ndarray] = {}
+    
+    def stack_cols(cols : List[str]) -> List[np.ndarray]: 
+        all_runs = []
+
+        for r in range(nb_runs):
+            arrs = []
+
+            for drone_id in names:
+                df = drone_groups[drone_id][r]
+                arr = df[cols].values.astype(np.float32)
+                arrs.append(arr)
+
+            matrix_run = np.stack(arrs, axis = 1)
+            all_runs.append(matrix_run)
+        
+        # List of nb_runs of matrixes [T, N, len(cols)]
+        return(all_runs)
+    
+
+    def stack_col(col: str) -> List[np.ndarray]:
+        all_runs = []
+
+        for r in range(nb_runs):
+            arrs = []
+
+            for drone_id in names:
+                df = drone_groups[drone_id][r]
+                arr = df[col].values.astype(np.float32)
+                arrs.append(arr)
+
+            matrix_run = np.stack(arrs, axis = 1)
+            all_runs.append(matrix_run)
+        
+        # List of nb_runs of matrixes [T, N]
+        return(all_runs)
+    
+    data: dict[str, List[np.ndarray]] = {}
+    # La liste représente le nombre de run et l'array possède le nombre de drone
+    # Donc ici data est devenu un dictionnaire avec les features en clés
+
     data["gt_pos"] = stack_cols(["gt_x", "gt_y", "gt_z"])
     data["gt_vel"] = stack_cols(["gt_vx", "gt_vy", "gt_vz"])
     data["meas_pos"] = stack_cols(["meas_x", "meas_y", "meas_z"])
@@ -240,7 +217,7 @@ def load_swarm_logs(log_dir: str, downsample: int = 1) -> SwarmLogs:
     data["tracking_error_mag"] = stack_col("tracking_error_mag")
     data["collision_flag_log"] = stack_col("collision_flag")  # from pybullet contact points
 
-    return SwarmLogs(times=times, drone_names=names, data=data, dt=dt)
+    return SwarmLogs(times=aligned_time, drone_names=names, data=data, dt=dt)
 
 
 # ---------------------------
@@ -273,6 +250,7 @@ def compute_pairwise_dists(pos: np.ndarray) -> np.ndarray:
 
 def detect_failures(
     logs: SwarmLogs,
+    run_idx: int,
     leader_index: int = 0,
     collision_dist: float = 0.6,
     formation_thresh: float = 1.0,
@@ -290,11 +268,11 @@ def detect_failures(
     - wind_loss: wind_mag > quantile ET dérivée de tracking_error positive
     - suboptimal_traj: tracking_error_mag > quantile (persistant)
     """
-    pos = logs.data["gt_pos"]  # [T,N,3]
-    vel = logs.data["gt_vel"]
-    wind_mag = logs.data["wind_mag"]
-    gnss_err = logs.data["gnss_error_mag"]
-    track_err = logs.data["tracking_error_mag"]
+    pos = logs.data["gt_pos"][run_idx]  # [T,N,3]
+    vel = logs.data["gt_vel"][run_idx]
+    wind_mag = logs.data["wind_mag"][run_idx]
+    gnss_err = logs.data["gnss_error_mag"][run_idx]
+    track_err = logs.data["tracking_error_mag"][run_idx]
 
     T, N, _ = pos.shape
 
@@ -356,6 +334,64 @@ def detect_failures(
         min_pairwise_dist=min_dist.astype(np.float32),
         speed=speed.astype(np.float32),
     )
+
+
+
+
+
+
+@dataclass
+class SequenceDataset:
+    s: List[np.ndarray]  # List of matrix nb_run * [T,N,S]
+    u: List[np.ndarray]  # List of matrix [T,N,U]
+    times: np.ndarray  # [T]
+
+    def sample_windows(self, seq_len: int, n_samples: int, rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:
+
+        s_w, u_w = [], []
+        nb_runs = len(self.s)
+
+        for _ in range(n_samples):
+            # On tire une run au hasard
+            run_idx = rng.randint(0, nb_runs)
+            T_run = self.s[run_idx].shape[0]
+
+            if T_run <= seq_len:
+                continue
+
+            start = rng.randint(0, T_run - seq_len)
+
+            s_w.append(self.s[run_idx][start:start+seq_len])
+            u_w.append(self.u[run_idx][start:start+seq_len])
+        
+        return np.stack(s_w), np.stack(u_w)
+    
+
+def build_sequence_dataset(logs: SwarmLogs, use_measured: bool = False) -> SequenceDataset:
+
+    s_list, u_list = [], []
+
+    for nb_run in range(len(logs.data["meas_pos"])):
+
+        if use_measured:
+            pos = logs.data["meas_pos"][nb_run]
+            vel = np.zeros_like(pos)
+            vel[1:] = (pos[1:] - pos[:-1]) / max(logs.dt, 1e-6)
+        else:
+            pos = logs.data["gt_pos"][nb_run]
+            vel = logs.data["gt_vel"][nb_run]
+        
+        
+        s = np.concatenate([pos, vel], axis = -1)
+        s_list.append(s.astype(np.float32))
+        wind = logs.data["wind"][nb_run]
+        gnss = logs.data["gnss_error_mag"][nb_run][..., None]
+        u = np.concatenate([wind, gnss], axis = -1)
+        u_list.append(u.astype(np.float32))
+
+    return SequenceDataset(s = s_list, u = u_list, times = logs.times.astype(np.float32))
+
+
 
 
 # ---------------------------
@@ -525,6 +561,7 @@ class NRIModel(nn.Module):
         z = gumbel_softmax(logits, tau=tau, hard=hard)
         return z, logits
 
+
     def forward(self, s_window: torch.Tensor, u_window: torch.Tensor,
                 senders: torch.Tensor, receivers: torch.Tensor,
                 tau: float = 0.5, hard: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -550,200 +587,65 @@ class NRIModel(nn.Module):
         return s_pred, z, logits
 
 
-class VAEEncoder(nn.Module):
-    """ 
-    Pour l'instant mon state_dim est seulement vel, puisque pos n'est pas pris en compte dans la première
-    couche Linear afin de garantir l'équivariance dans l'EGNN (state_dim = vel_norm_dim = 1).
-    """
-    def __init__(self, window_size: int, vel_dim: int, exog_dim: int, hidden_dim: int, z_dim: int, dropout: float = 0.0):
-        super().__init__()
-        self.exog_dim = exog_dim
-        self.hidden_dim = hidden_dim
-        self.z_dim = z_dim
-
-        input_dim = window_size * (vel_dim + exog_dim)
-
-        #On crée le réseau
-        self.raw2hidden = nn.Sequential( 
-        nn.Linear(input_dim, hidden_dim),
-        nn.ReLU(),
-        nn.Linear(hidden_dim, hidden_dim)
-        )
-
-        self.egnn = EGNN(dim = hidden_dim, m_dim = 64, update_coors=True) 
-        
-        self.fc_mu = nn.Linear(hidden_dim, z_dim)
-        self.fc_logvar = nn.Linear(hidden_dim, z_dim)
-
-
-    def forward(self, pos_t, vel_win, exog_win):
-        """
-        pos_win : [B, W, N, 3]   W = window_size
-        vel_win : [B, W, N, 3]
-        exog_win : wind [B, W, N, exog_size]
-        x_out : [B, N, 3] = pos + v_modele (instant t+1)
-
-        Je pars du principe qu'on a traité pos_win vel_win et exog_win avec 
-        temp : [B, N, W * (vel_size + exog_size)]
-        pos_t : [B, N, 3]
-        """
-
-        # A MODIFIER : Faire une fonction dans le modele complet
-        
-        vel_norms = torch.norm(vel_win, dim=-1)
-        exog_norms = torch.norm(exog_win, dim=-1)
-        vel_t = vel_win[:, -1, :, :] 
-        wind_t = exog_win[:, -1, :, :]
-        v_in = vel_t + wind_t # [B, N, 3] On veut le vecteur général du drone
-        
-        # Taille: [Batch, Window, N, 2]
-        scalaires = torch.cat([vel_norms.unsqueeze(-1), exog_norms.unsqueeze(-1)], dim=-1) 
-
-        # [Batch, Window, N, 2] --> [Batch, N, Window, 2]
-        scalaires = scalaires.transpose(1, 2) 
-        
-        # Taille finale : [Batch, N, Window * 2]
-        h_in_brut = scalaires.flatten(start_dim=2) 
-
-        h_in = self.raw2hidden(h_in_brut) 
-        h_out, pos_out = self.egnn(h=h_in, x=pos_t, edges=None, v_in=v_in)
-        mu = self.fc_mu(h_out)
-        logvar = self.fc_logvar(h_out)
-
-        return mu, logvar
-
-
-# A modifier (Comprendre la théorie derrière surtout et ce que je cherche à calculer/trouver)
-
-class VAEDecoder(nn.Module):
-    def __init__(self, z_dim: int, hidden_dim: int, dropout: float = 0.0):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.z_dim = z_dim
-
-        self.egnn = EGNN(self, dim = z_dim, m_dim = hidden_dim, update_coors= True, soft_edges = True)
-
-    def forward(self, z, pos):
-        """
-        z : Après le reparam trick [B, N, z_dim]
-        exog_next : Le vent à l'instant t+1 [B, N, exog_dim]
-        """
-
-        h_out, pos_next, edges_scores = self.egnn(h = z, x = pos)
-        return pos_next, edges_scores
-    
-
-
-class VAEModel(nn.Module):
-    def __init__(self, n_nodes: int, window_size: int, vel_dim: int, exog_dim: int, hidden_dim: int = 128, latent_dim: int = 16, dropout: float = 0.0):
-        super().__init__()
-        self.n_nodes = n_nodes
-        self.window_size = window_size    # En delta_t
-        self.exog_dim = exog_dim
-        self.hidden_dim = hidden_dim
-        self.latent_dim = latent_dim
-
-        self.encoder = VAEEncoder(n_nodes, window_size, vel_dim, exog_dim, hidden_dim, latent_dim, dropout)
-        self.decoder = VAEDecoder(n_nodes, vel_dim, exog_dim, hidden_dim, latent_dim, dropout)
-
-    def reparam_trick(self, mu, logvar):
-        """
-        With this method, z = mu + eps*std
-        """
-        # L'astuce de reparamétrisation : z = mu + std * epsilon
-
-        if self.training:
-            std = torch.exp(0.5 * logvar)
-
-            eps = torch.randn_like(std)
-
-            return mu + eps * std
-
-        else:
-            return mu
-        
-    def data_transfo(self, pos_win, vel_win, exog_win):
-        pos = []
-        vel = []
-        exog = []
-        temp = []
-        return pos, temp
-        
-    def forward(self, pos_win, vel_win, exog_win, edges):
-        pos, temp = self.data_transfo(pos_win, vel_win, exog_win)
-        mu, logvar = self.encoder(pos, temp, edges)
-        z = self.reparam_trick(mu, logvar)
-
-        
-
-
-# ---------------------------
-# Preparing sequences
-# ---------------------------
-
-@dataclass
-class SequenceDataset:
-    s: np.ndarray  # [T,N,S]
-    u: np.ndarray  # [T,N,U]
-    times: np.ndarray  # [T]
-
-    def sample_windows(self, seq_len: int, n_samples: int, rng: np.random.RandomState) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Return windows (s_window,u_window) with shape:
-          s_win: [B,L,N,S], u_win: [B,L,N,U]
-        """
-        T = self.s.shape[0]
-        if T <= seq_len + 1:
-            raise ValueError(f"Not enough timesteps T={T} for seq_len={seq_len}")
-
-        starts = rng.randint(0, T - seq_len, size=n_samples)
-        s_w = np.stack([self.s[i:i+seq_len] for i in starts], axis=0)
-        u_w = np.stack([self.u[i:i+seq_len] for i in starts], axis=0)
-        return s_w, u_w
-
-
-def build_sequence_dataset(logs: SwarmLogs, use_measured: bool = False) -> SequenceDataset:
-    """
-    s: state used by NRI (pos, vel). Default uses ground truth.
-    u: exogenous (wind vector + gnss_error_mag) by drone.
-    """
-    if use_measured:
-        pos = logs.data["meas_pos"]
-        # approximate vel from finite difference
-        vel = np.zeros_like(pos)
-        vel[1:] = (pos[1:] - pos[:-1]) / max(logs.dt, 1e-6)
-    else:
-        pos = logs.data["gt_pos"]
-        vel = logs.data["gt_vel"]
-
-    s = np.concatenate([pos, vel], axis=-1)  # [T,N,6]
-    wind = logs.data["wind"]  # [T,N,3]
-    gnss = logs.data["gnss_error_mag"][..., None]  # [T,N,1]
-    u = np.concatenate([wind, gnss], axis=-1)  # [T,N,4]
-    return SequenceDataset(s=s.astype(np.float32), u=u.astype(np.float32), times=logs.times.astype(np.float32))
-
-
-# ---------------------------
-# Train NRI
-# ---------------------------
-
 @dataclass
 class NRIResults:
-    edge_probs: np.ndarray       # [N,N] probability of "some interaction" (1 - p(no-edge))
-    edge_type_probs: np.ndarray  # [K,N,N] probability of each edge type
-    signed_influence: np.ndarray # [N,N] signed influence (heuristic sign * edge_probs)
+    edge_probs: np.ndarray
+    edge_type_probs: np.ndarray
+    signed_influence: np.ndarray
     nri_loss_curve: List[float]
 
+def infer_edges_multirun(model, dataset_s_list, senders, receivers, N, n_edge_types, device):
+    model.eval()
+    all_edge_probs = [] # Va stocker les matrices NxN de chaque run
+    all_edge_type_probs = []
+    K = n_edge_types
+
+    with torch.no_grad():
+        for run_s in dataset_s_list:
+            # [1, T, N, S]
+            s_tensor = torch.tensor(run_s).unsqueeze(0).to(device)
+
+            s_mean = torch.mean(s_tensor, dim = 1) # [1, N, S]
+            
+            # L'encodeur recrache la "pile de câbles"
+            logits = model.encoder(s_mean, senders, receivers)
+            probs = torch.softmax(logits, dim=-1) # Forme: [1, E, K]
+            
+            # On extrait z_mean (les probabilités de cette run)
+            z_mean = probs[0].cpu().numpy() # Forme: [E, K]
+            
+            # --- LE BLOC TRADUCTEUR QUE TU VIENS DE MONTRER ---
+            edge_probs_run = np.zeros((N, N), dtype=np.float32)
+            edge_type_probs_run = np.zeros((n_edge_types, N, N), dtype=np.float32)
+            E = len(senders)
+
+            send_np = senders.cpu().numpy().astype(int)
+            recv_np = receivers.cpu().numpy().astype(int)
+            
+            for e in range(E):
+                j = send_np[e]
+                i = recv_np[e]
+                for k in range(K):
+                    edge_type_probs_run[k, i, j] = float(z_mean[e, k])
+                # Probabilité d'interaction = 1 - Probabilité(Type 0)
+                edge_probs_run[i, j] = float(1.0 - z_mean[e, 0])
+            # ---------------------------------------------------
+            
+            all_edge_probs.append(edge_probs_run)
+            all_edge_type_probs.append(edge_type_probs_run)
+
+    # On retourne la matrice NxN moyenne de toutes les runs
+    return np.mean(all_edge_probs, axis=0), np.mean(all_edge_type_probs, axis=0)
 
 def train_nri(
     dataset: SequenceDataset,
     n_nodes: int,
     seq_len: int = 30,
-    n_edge_types: int = 3,
+    n_edge_types: int = 2,
     hidden: int = 128,
     dropout: float = 0.0,
     batch_size: int = 64,
-    nri_steps: int = 1400,
+    nri_steps: int = 1500,
     lr: float = 3e-4,
     tau_start: float = 1.0,
     tau_end: float = 0.5,
@@ -758,32 +660,41 @@ def train_nri(
     dev = torch.device(device)
     set_torch_threads(torch_threads)
 
-    S = dataset.s.shape[-1]
-    U = dataset.u.shape[-1]
+    S = dataset.s[0].shape[-1]
+    U = dataset.u[0].shape[-1]
 
-    model = NRIModel(n_nodes=n_nodes, state_dim=S, exog_dim=U, hidden=hidden,
+    model = NRIModel(n_nodes = n_nodes, state_dim=S, exog_dim=U, hidden=hidden,
                      n_edge_types=n_edge_types, dropout=dropout).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
     senders, receivers = build_offdiag_indices(n_nodes, dev)
 
-    # Standardize s and u (important for stable training)
-    s_flat = dataset.s.reshape(-1, S)
-    u_flat = dataset.u.reshape(-1, U)
+    s_concat = np.concatenate(dataset.s, axis = 0) # -> [Somme_T, N, S]
+    u_concat = np.concatenate(dataset.u, axis = 0)
+
+    s_flat = s_concat.reshape(-1, S)
+    u_flat = u_concat.reshape(-1, U)
+
     s_scaler = StandardScaler().fit(s_flat)
     u_scaler = StandardScaler().fit(u_flat)
 
-    s_std = s_scaler.transform(s_flat).reshape(dataset.s.shape).astype(np.float32)
-    u_std = u_scaler.transform(u_flat).reshape(dataset.u.shape).astype(np.float32)
-    ds_std = SequenceDataset(s=s_std, u=u_std, times=dataset.times)
+    s_std_list = [
+        s_scaler.transform(run.reshape(-1, S)).reshape(run.shape).astype(np.float32)
+        for run in dataset.s
+    ]
+    u_std_list = [
+        u_scaler.transform(run.reshape(-1, U)).reshape(run.shape).astype(np.float32)
+        for run in dataset.u
+    ]
+
+    ds_std = SequenceDataset(s=s_std_list, u=u_std_list, times=dataset.times)
 
     rng = np.random.RandomState(seed)
     loss_curve: List[float] = []
 
-    # training windows reservoir
     n_windows = min(max_train_windows, max(1000, batch_size * 10))
-    # Pour accélérer: on fait du one-step prediction (fenêtre seq_len+1, on prédit uniquement la dernière transition)
-    s_w_all, u_w_all = ds_std.sample_windows(seq_len=seq_len + 1, n_samples=n_windows, rng=rng)
+
+    s_w_all, u_w_all = ds_std.sample_windows(seq_len=seq_len + 1, n_samples=n_windows, rng = rng)
 
     s_w_all_t = torch.from_numpy(s_w_all).to(dev)
     u_w_all_t = torch.from_numpy(u_w_all).to(dev)
@@ -822,34 +733,11 @@ def train_nri(
 
     # infer edge probabilities by running encoder over many windows
     model.eval()
-    with torch.no_grad():
-        B_eval = min(1024, n_windows)
-        idx = rng.choice(n_windows, size=B_eval, replace=False)
-        s_win = s_w_all_t[idx][:, :seq_len, :, :]
-        # use hard=False to estimate probabilities, then average
-        z, logits = model.infer_edges(s_win, senders, receivers, tau=tau_end, hard=False)  # [B,E,K]
-        z_mean = torch.mean(z, dim=0)  # [E,K]
-        z_mean = to_numpy(z_mean)  # [E,K]
 
-    # Build adjacency matrices
-    N = n_nodes
-    K = n_edge_types
-    edge_type_probs = np.zeros((K, N, N), dtype=np.float32)
-    edge_probs = np.zeros((N, N), dtype=np.float32)
-
-    E = len(senders)
-    send_np = to_numpy(senders).astype(int)
-    recv_np = to_numpy(receivers).astype(int)
-    for e in range(E):
-        j = send_np[e]
-        i = recv_np[e]
-        for k in range(K):
-            edge_type_probs[k, i, j] = float(z_mean[e, k])
-        # interaction probability = 1 - p(no-edge) ; we assume type 0 = no edge by convention
-        edge_probs[i, j] = float(1.0 - z_mean[e, 0])
+    edge_probs, edge_type_probs = infer_edges_multirun(model, ds_std.s, senders, receivers,  N = n_nodes, device = device, n_edge_types=n_edge_types)
 
     # Signed influence heuristic from data: if i tends to accelerate away from j -> repulsive
-    signed = estimate_signed_influence(dataset.s, edge_probs, leader_index=0)
+    signed = estimate_signed_influence(s_concat, edge_probs, leader_index=0)
 
     return NRIResults(
         edge_probs=edge_probs,
@@ -857,7 +745,6 @@ def train_nri(
         signed_influence=signed,
         nri_loss_curve=loss_curve,
     )
-
 
 def estimate_signed_influence(states: np.ndarray, edge_probs: np.ndarray, leader_index: int = 0) -> np.ndarray:
     """
@@ -889,75 +776,9 @@ def estimate_signed_influence(states: np.ndarray, edge_probs: np.ndarray, leader
     return signed
 
 
-# ---------------------------
-# Exogenous causal scores (Granger) + Event models
-# ---------------------------
-
-@dataclass
-class GrangerResults:
-    # dict[event][factor] -> [N] scores in [0,1] (1 = strong evidence factor Granger-causes event)
-    scores: Dict[str, Dict[str, np.ndarray]]
-    # pvalues min
-    min_pvalues: Dict[str, Dict[str, np.ndarray]]
 
 
-def safe_granger_score(x: np.ndarray, y: np.ndarray, maxlag: int = 5) -> Tuple[float, float]:
-    """
-    Granger test y ~ past(y,x) -> does x help predict y?
-    Returns (score, min_pvalue). Score is mapped as 1 - min_pvalue (clipped).
-    """
-    try:
-        # requires shape [T,2] with columns [y, x] for tests "x causes y"
-        data = np.column_stack([y, x]).astype(np.float64)
-        # statsmodels prints by default; silence it
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            res = grangercausalitytests(data, maxlag=maxlag, verbose=False)
-        pvals = []
-        for lag, out in res.items():
-            # F-test pvalue
-            pvals.append(out[0]["ssr_ftest"][1])
-        min_p = float(np.min(pvals))
-        score = float(np.clip(1.0 - min_p, 0.0, 1.0))
-        return score, min_p
-    except Exception:
-        return 0.0, 1.0
 
-
-def compute_granger(logs: SwarmLogs, labels: FailureLabels, maxlag: int = 5) -> GrangerResults:
-    """
-    Compute Granger-like evidence that wind/GNSS predict events.
-    """
-    wind = logs.data["wind_mag"]  # [T,N]
-    gnss = logs.data["gnss_error_mag"]
-    events = {
-        "collision": labels.collision,
-        "formation_loss": labels.formation_loss,
-        "gnss_degradation": labels.gnss_degradation,
-        "wind_loss": labels.wind_loss,
-        "suboptimal_traj": labels.suboptimal_traj,
-    }
-    factors = {
-        "wind_mag": wind,
-        "gnss_error_mag": gnss,
-    }
-
-    scores: Dict[str, Dict[str, np.ndarray]] = {}
-    min_pvals: Dict[str, Dict[str, np.ndarray]] = {}
-    for ev_name, ev in events.items():
-        scores[ev_name] = {}
-        min_pvals[ev_name] = {}
-        for fac_name, fac in factors.items():
-            N = ev.shape[1]
-            sc = np.zeros(N, dtype=np.float32)
-            pv = np.ones(N, dtype=np.float32)
-            for i in range(N):
-                s, p = safe_granger_score(fac[:, i], ev[:, i], maxlag=maxlag)
-                sc[i] = s
-                pv[i] = p
-            scores[ev_name][fac_name] = sc
-            min_pvals[ev_name][fac_name] = pv
-    return GrangerResults(scores=scores, min_pvalues=min_pvals)
 
 
 @dataclass
@@ -987,7 +808,7 @@ def build_interaction_pressure(pos: np.ndarray, edge_probs: np.ndarray, eps: flo
 
 def fit_event_models(
     logs: SwarmLogs,
-    labels: FailureLabels,
+    labels: List[FailureLabels],
     edge_probs: np.ndarray,
     horizon_lag: int = 1,
     max_events_to_explain: int = 2000,
@@ -998,30 +819,69 @@ def fit_event_models(
     Then convert coefficient contributions into per-event root-cause probability distribution.
     """
     rng = np.random.RandomState(seed)
+    n_runs = len(logs.data["gt_pos"])
+    lag = horizon_lag
 
-    pos = logs.data["gt_pos"]
-    wind = logs.data["wind_mag"]
-    gnss = logs.data["gnss_error_mag"]
-    repf = logs.data["rep_force_mag"]
-    track = logs.data["tracking_error_mag"]
-    formerr = labels.formation_error
-    mindist = labels.min_pairwise_dist
+    all_X_lag = []
 
-    interaction_pressure = build_interaction_pressure(pos, edge_probs)  # [T,N]
-
-    events = {
-        "collision": labels.collision,
-        "formation_loss": labels.formation_loss,
-        "gnss_degradation": labels.gnss_degradation,
-        "wind_loss": labels.wind_loss,
-        "suboptimal_traj": labels.suboptimal_traj,
+    events_all = {
+        "collision": [],
+        "formation_loss": [],
+        "gnss_degradation": [],
+        "wind_loss": [],
+        "suboptimal_traj": []
     }
 
-    # Features at t-lag
-    T, N = wind.shape
-    lag = horizon_lag
-    # drop first lag timesteps
-    idx_t = np.arange(lag, T)
+    for run in range(n_runs):
+
+        pos = logs.data["gt_pos"][run]
+        wind = logs.data["wind_mag"][run]
+        gnss = logs.data["gnss_error_mag"][run]
+        repf = logs.data["rep_force_mag"][run]
+        track = logs.data["tracking_error_mag"][run]
+
+        label = labels[run]
+        formerr = label.formation_error
+        mindist = label.min_pairwise_dist
+
+        interaction_pressure = build_interaction_pressure(pos, edge_probs)  # [T,N]
+
+        # Features at t-lag
+        T, N = wind.shape
+        # drop first lag timesteps
+        idx_t = np.arange(lag, T)
+
+        events_all["collision"].append(label.collision[idx_t])
+        events_all["formation_loss"].append(label.formation_loss[idx_t])
+        events_all["gnss_degradation"].append(label.gnss_degradation[idx_t])
+        events_all["wind_loss"].append(label.wind_loss[idx_t])
+        events_all["suboptimal_traj"].append(label.suboptimal_traj[idx_t])
+        
+        # lagged features (t-lag)
+        X_lag = np.stack([
+        wind[idx_t - lag],
+        gnss[idx_t - lag],
+        repf[idx_t - lag],
+        track[idx_t - lag],
+        formerr[idx_t - lag],
+        mindist[idx_t - lag],
+        interaction_pressure[idx_t - lag],
+        ], axis=-1)
+
+        all_X_lag.append(X_lag)
+
+        
+        # Flatten
+        X_lag_global = np.concatenate(all_X_lag, axis=0) # [n_runs*(T-lag), N, F]
+        Xf_global = X_lag_global.reshape(-1, X_lag_global.shape[-1]) # [n_runs*(T-lag)*N, F]
+        scaler = StandardScaler().fit(Xf_global)
+        Xfs = scaler.transform(Xf_global)
+
+        outputs_proba: Dict[str, List[np.ndarray]] = {} # Liste de prédictions par run
+        event_causes: List[Dict] = []
+        avg_causes: Dict[str, Dict[str, List[float]]] = {}
+
+    
 
     # base feature matrix per (t,i)
     # order matters for grouping later
@@ -1035,36 +895,6 @@ def fit_event_models(
         "interaction_pressure",
     ]
 
-    X = np.stack([
-        wind[idx_t],
-        gnss[idx_t],
-        repf[idx_t],
-        track[idx_t],
-        formerr[idx_t],
-        mindist[idx_t],
-        interaction_pressure[idx_t],
-    ], axis=-1)  # [T-lag, N, F]
-
-    # lagged features (t-lag)
-    X_lag = np.stack([
-        wind[idx_t - lag],
-        gnss[idx_t - lag],
-        repf[idx_t - lag],
-        track[idx_t - lag],
-        formerr[idx_t - lag],
-        mindist[idx_t - lag],
-        interaction_pressure[idx_t - lag],
-    ], axis=-1)
-
-    # Flatten
-    Xf = X_lag.reshape(-1, X_lag.shape[-1])  # [(T-lag)*N, F]
-    scaler = StandardScaler().fit(Xf)
-    Xfs = scaler.transform(Xf)
-
-    outputs_proba: Dict[str, np.ndarray] = {}
-    event_causes: List[Dict] = []
-    avg_causes: Dict[str, Dict[str, List[float]]] = {}
-
     # Factor grouping for root-cause attribution
     groups = {
         "wind": ["wind_mag"],
@@ -1074,8 +904,9 @@ def fit_event_models(
     }
     name_to_idx = {n: k for k, n in enumerate(feature_names)}
 
-    for ev_name, Y in events.items():
-        y = Y[idx_t].reshape(-1).astype(int)  # [(T-lag)*N]
+    for ev_name in events_all.keys():
+        
+        y = np.concatenate(events_all[ev_name], axis=0).reshape(-1).astype(int)  # [(T-lag)*N]
         # If event extremely rare, skip
         if y.sum() < 10:
             print(f"[EventModel] '{ev_name}' trop rare ({y.sum()} positives). Skipping model.")
@@ -1085,11 +916,15 @@ def fit_event_models(
         clf = LogisticRegression(max_iter=2000, class_weight="balanced", solver="lbfgs")
         clf.fit(Xfs, y)
 
+        proba = clf.predict_proba(Xfs)[:, 1]
+        proba_global = proba.reshape(n_runs, len(idx_t), N)
+        outputs_proba[ev_name] = []
         # Predict proba for all times (align)
-        proba_all = np.zeros((T, N), dtype=np.float32)
-        proba = clf.predict_proba(Xfs)[:, 1].reshape(len(idx_t), N)
-        proba_all[idx_t] = proba.astype(np.float32)
-        outputs_proba[ev_name] = proba_all
+        for r in range(n_runs):
+            proba_all = np.zeros((T, N), dtype=np.float32)
+        
+            proba_all[idx_t] = proba_global[r]
+            outputs_proba[ev_name].append(proba_all)
 
         # Root-cause explanations for positive instances
         coef = clf.coef_.reshape(-1)  # [F]
@@ -1107,8 +942,11 @@ def fit_event_models(
         cnt_by_drone = np.zeros(N, dtype=int)
 
         for idx_flat in pos_indices:
-            t_rel = idx_flat // N
-            i = idx_flat % N
+            points_per_run = len(idx_t) * N
+            run_idx = idx_flat // points_per_run # Car on a concat toutes les runs dans y
+            reste = idx_flat % points_per_run
+            t_rel = reste // N
+            i = reste % N
             t = int(idx_t[t_rel])  # absolute time index
 
             # group scores
@@ -1127,11 +965,12 @@ def fit_event_models(
             # store
             event_causes.append({
                 "event": ev_name,
+                "run_index": int(run_idx),
                 "time": float(logs.times[t]),
                 "t_index": int(t),
                 "drone": int(i),
                 "drone_name": logs.drone_names[i],
-                "predicted_event_probability": float(proba_all[t, i]),
+                "predicted_event_probability": float(outputs_proba[ev_name][run_idx][t, i]),
                 "cause_probabilities": g_probs,
                 "raw_group_scores": g_scores,
             })
@@ -1149,6 +988,7 @@ def fit_event_models(
         print(f"[EventModel] '{ev_name}': trained. Explained events: {len(pos_indices)}.")
 
     return EventModelOutputs(proba=outputs_proba, event_causes=event_causes, avg_causes=avg_causes)
+
 
 
 # ---------------------------
@@ -1281,6 +1121,12 @@ def save_matrix_csv(mat: np.ndarray, row_names: List[str], col_names: List[str],
     df.to_csv(out_path)
 
 
+
+
+
+
+
+
 # ---------------------------
 # Main pipeline
 # ---------------------------
@@ -1290,19 +1136,25 @@ def run_pipeline(args: argparse.Namespace) -> Dict:
 
     logs = load_swarm_logs(args.log_dir, downsample=args.downsample)
     names = logs.drone_names
+    n_runs = len(logs.data["meas_pos"])
     N = len(names)
     print(f"[Load] N={N} drones, T={len(logs.times)} steps, dt≈{logs.dt:.4f}s, downsample={args.downsample}")
 
-    labels = detect_failures(
-        logs,
-        leader_index=args.leader_index,
-        collision_dist=args.collision_dist,
-        formation_thresh=args.formation_thresh,
-        gnss_quantile=args.gnss_quantile,
-        wind_quantile=args.wind_quantile,
-        suboptimal_quantile=args.suboptimal_quantile,
-        min_persist_steps=args.suboptimal_persist,
-    )
+    all_labels = [] # Création de d'une liste de FailureLabels pour chaque run
+
+    for run_idx in range(n_runs):
+        labels = detect_failures(
+            logs,
+            run_idx = run_idx,
+            leader_index=args.leader_index,
+            collision_dist=args.collision_dist,
+            formation_thresh=args.formation_thresh,
+            gnss_quantile=args.gnss_quantile,
+            wind_quantile=args.wind_quantile,
+            suboptimal_quantile=args.suboptimal_quantile,
+            min_persist_steps=args.suboptimal_persist,
+            )
+        all_labels.append(labels)
 
     # Build dataset for NRI
     ds = build_sequence_dataset(logs, use_measured=args.use_measured)
@@ -1331,32 +1183,31 @@ def run_pipeline(args: argparse.Namespace) -> Dict:
     # Event models & root-cause explanations
     ev_out = fit_event_models(
         logs=logs,
-        labels=labels,
+        labels=all_labels,
         edge_probs=nri_res.edge_probs,
         horizon_lag=args.event_lag,
         max_events_to_explain=args.max_events_to_explain,
         seed=args.seed,
     )
 
-    # Granger causality (wind/GNSS -> events)
-    gr = compute_granger(logs, labels, maxlag=args.granger_maxlag)
-
     # Systemic impact: define a "generic failure" label as OR of events
-    generic_failure = (
-        (labels.collision | labels.formation_loss | labels.gnss_degradation | labels.wind_loss | labels.suboptimal_traj)
-    ).astype(np.int32)
+    
 
     impacts = {}
-    for ev_name, ev in {
-        "collision": labels.collision,
-        "formation_loss": labels.formation_loss,
-        "gnss_degradation": labels.gnss_degradation,
-        "wind_loss": labels.wind_loss,
-        "suboptimal_traj": labels.suboptimal_traj,
-    }.items():
-        impacts[ev_name] = compute_systemic_impact(ev, generic_failure, horizon_steps=args.impact_horizon)
+    event_names = ["collision", "formation_loss", "gnss_degradation", "wind_loss", "suboptimal_traj"]
+    for ev_name in event_names:
+        run_impacts = []
+        for r in range(n_runs):
+            lab = all_labels[r]
+            generic_failure = (lab.collision | lab.formation_loss | lab.gnss_degradation | lab.wind_loss | lab.suboptimal_traj).astype(np.int32)
+            ev = getattr(lab, ev_name)        
+            imp = compute_systemic_impact(ev, generic_failure, horizon_steps=args.impact_horizon)
+            run_impacts.append(imp)
 
-    # ------------------ save matrices ------------------
+        impacts[ev_name] = np.mean(run_impacts, axis = 0)
+
+
+     # ------------------ save matrices ------------------
     out = args.output_dir
     np.save(os.path.join(out, "nri_edge_probs.npy"), nri_res.edge_probs)
     np.save(os.path.join(out, "nri_edge_type_probs.npy"), nri_res.edge_type_probs)
@@ -1377,14 +1228,7 @@ def run_pipeline(args: argparse.Namespace) -> Dict:
     with open(os.path.join(out, "event_root_cause_averages.json"), "w", encoding="utf-8") as f:
         json.dump(ev_out.avg_causes, f, ensure_ascii=False, indent=2)
 
-    # save granger
-    with open(os.path.join(out, "granger_scores.json"), "w", encoding="utf-8") as f:
-        json.dump({ev: {fac: gr.scores[ev][fac].tolist() for fac in gr.scores[ev]} for ev in gr.scores},
-                  f, ensure_ascii=False, indent=2)
-    with open(os.path.join(out, "granger_min_pvalues.json"), "w", encoding="utf-8") as f:
-        json.dump({ev: {fac: gr.min_pvalues[ev][fac].tolist() for fac in gr.min_pvalues[ev]} for ev in gr.min_pvalues},
-                  f, ensure_ascii=False, indent=2)
-
+    
     # ------------------ figures ------------------
     plot_loss_curve(nri_res.nri_loss_curve, os.path.join(out, "nri_training_loss.png"))
 
@@ -1428,22 +1272,6 @@ def run_pipeline(args: argparse.Namespace) -> Dict:
             vmax=1.0,
         )
 
-    # granger scores: factors (wind/gnss) x drones per event
-    for ev_name in gr.scores.keys():
-        # make a matrix 2 x N for each event
-        mat = np.stack([gr.scores[ev_name]["wind_mag"], gr.scores[ev_name]["gnss_error_mag"]], axis=0)
-        plot_heatmap(
-            mat,
-            title=f"Granger evidence (1 - min p-value): factors -> {ev_name}",
-            xlabel="drone",
-            ylabel="factor",
-            xticks=names,
-            yticks=["wind_mag", "gnss_error_mag"],
-            out_path=os.path.join(out, f"granger_{ev_name}_heatmap.png"),
-            vmin=0.0,
-            vmax=1.0,
-        )
-
     # average root cause probabilities per event type: groups x drones
     for ev_name, gdict in ev_out.avg_causes.items():
         groups = list(gdict.keys())
@@ -1461,7 +1289,8 @@ def run_pipeline(args: argparse.Namespace) -> Dict:
         )
 
     # event probability series
-    plot_event_probas(logs.times, ev_out.proba, names, out)
+    proba_run_0 = {ev: probas[0] for ev, probas in ev_out.proba.items()}
+    plot_event_probas(logs.times, proba_run_0, names, out)
 
     # impacts
     for ev_name, mat in impacts.items():
@@ -1476,6 +1305,7 @@ def run_pipeline(args: argparse.Namespace) -> Dict:
             vmin=float(np.min(mat)),
             vmax=float(np.max(mat)),
         )
+
 
     # High-level summary for report
     summary = {
@@ -1531,7 +1361,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # Sampling / speed
     p.add_argument("--downsample", type=int, default=1, help="Downsample logs by keeping every k-th row.")
-    p.add_argument("--seed", type=int, default=0, help="Random seed.")
+    p.add_argument("--seed", type=int, default=1, help="Random seed.")
     p.add_argument("--device", type=str, default="cpu", help="cpu or cuda (if available).")
     p.add_argument("--torch_threads", type=int, default=1, help="Nombre de threads CPU pour PyTorch (mettre 1 pour éviter un énorme overhead sur petites tailles).")
 
@@ -1546,12 +1376,12 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # NRI training params
     p.add_argument("--use_measured", action="store_true", help="Use measured pos (EKF) instead of ground truth for NRI.")
-    p.add_argument("--seq_len", type=int, default=30, help="Sequence length (window) for NRI.")
+    p.add_argument("--seq_len", type=int, default=40, help="Sequence length (window) for NRI.")
     p.add_argument("--n_edge_types", type=int, default=3, help="Number of edge types (type 0 assumed no-edge).")
     p.add_argument("--hidden", type=int, default=128, help="Hidden dimension for NRI.")
     p.add_argument("--dropout", type=float, default=0.0, help="Dropout probability.")
-    p.add_argument("--batch_size", type=int, default=64, help="Batch size for NRI training.")
-    p.add_argument("--nri_steps", type=int, default=1400, help="Training steps for NRI.")
+    p.add_argument("--batch_size", type=int, default=128, help="Batch size for NRI training.")
+    p.add_argument("--nri_steps", type=int, default=5000, help="Training steps for NRI.")
     p.add_argument("--max_train_windows", type=int, default=5000, help="Max sampled windows for training pool.")
     p.add_argument("--lr", type=float, default=3e-4, help="Learning rate for NRI.")
     p.add_argument("--tau_start", type=float, default=1.0, help="Initial Gumbel-Softmax temperature.")
@@ -1569,10 +1399,10 @@ def build_argparser() -> argparse.ArgumentParser:
     return p
 
 
+
 def main():
     args = build_argparser().parse_args()
     run_pipeline(args)
-
 
 if __name__ == "__main__":
     main()

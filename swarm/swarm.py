@@ -77,11 +77,9 @@ class Swarm:
         self.port_in = port_in
         self.port_out = port_out
         self.ip = ip
-        self.init_proxy()
         self.setup_swarm_com()
         for a in self.agents:
             a.setup_network_swarm(self.ip,self.port_in, self.port_out)
-            print('a')
         self.leader.setup_network_swarm(self.ip, self.port_in, self.port_out)
         # ----------------- OFFSETS DE FORMATION -----------------
         self.formation_body_offsets: dict[str, np.ndarray] = {}
@@ -138,40 +136,7 @@ class Swarm:
                 idx += 1
             row += 1
     
-    # ------------------------------------------------------------------
-    def init_proxy(self):
-        def run_proxy():
-            try:
-                # Contexte ZMQ pour le thread proxy
-                ctx = zmq.Context()
-
-                # FRONTEND (Entrée) : Utiliser XSUB pour relayer les abonnements
-                frontend = ctx.socket(zmq.XSUB)
-                frontend.bind(f"tcp://*:{self.port_in}")
-
-                # BACKEND (Sortie) : Utiliser XPUB pour diffuser
-                backend = ctx.socket(zmq.XPUB)
-                backend.bind(f"tcp://*:{self.port_out}")
-
-                print(f"[Swarm Network] Proxy démarré (In: {self.port_in} -> Out: {self.port_out})")
-                
-                # Le proxy tourne ici indéfiniment. 
-                # On ne stocke PAS les sockets dans 'self' car ils appartiennent à ce thread.
-                zmq.proxy(frontend, backend)
-                
-            except zmq.ContextTerminated:
-                print("[Swarm Network] Contexte ZMQ terminé.")
-            except Exception as e:
-                print(f"[Swarm Network] Erreur dans le proxy : {e}")
-            finally:
-                # Nettoyage propre au thread
-                frontend.close()
-                backend.close()
-                ctx.term()
-
-        # Démarrage du thread
-        self.proxy_thread = threading.Thread(target=run_proxy, daemon=True)
-        self.proxy_thread.start()
+ 
 
     def setup_swarm_com(self):
         """

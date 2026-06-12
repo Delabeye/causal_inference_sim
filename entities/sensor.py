@@ -57,7 +57,7 @@ class GNSSensor(Sensor):
         """
         Returns (measured_position, measured_velocity) with Gaussian noise.
         """
-        pos_noise = np.random.normal(1.0, self.pos_noise_std, 3)
+        pos_noise = np.random.normal(0.0, self.pos_noise_std, 3)
         vel_noise = np.random.normal(0.0, self.vel_noise_std, 3)
 
         meas_pos = ground_truth_position + pos_noise

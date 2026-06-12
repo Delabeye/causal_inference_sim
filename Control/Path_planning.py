@@ -217,7 +217,7 @@ class HeightmapAStar:
         gx, gy = self._pos_to_idx(goal_pos)
         
         # 2. Création de la Grille Binaire
-        drone_z = start_pos[2]
+        drone_z = max(start_pos[2], 0.5)
         # True = Libre (Walkable), False = Mur gonflé
         walkable_grid = (self.h_map < drone_z).astype(int) 
         
@@ -251,7 +251,15 @@ class HeightmapAStar:
         smoothed_nodes = self._smooth_path(path, grid)
         
         # --- CORRECTION "SUBSCRIPTABLE" : Utilisation de p.x et p.y ---
-        world_path = [self._idx_to_pos(p.x, p.y, goal_pos[2]) for p in smoothed_nodes]
+        n_nodes = len(smoothed_nodes)
+        world_path = []
+        for idx, p in enumerate(smoothed_nodes):
+            if n_nodes > 1:
+                t = idx / (n_nodes - 1)
+                z = start_pos[2] + (goal_pos[2] - start_pos[2]) * t
+            else:
+                z = goal_pos[2]
+            world_path.append(self._idx_to_pos(p.x, p.y, z))
         return world_path
 
     def _smooth_path(self, path_nodes, grid):

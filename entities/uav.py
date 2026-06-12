@@ -102,7 +102,7 @@ class UAV(Agent):
         wp_list = config.get("waypoints", [])
         if not wp_list: wp_list = [[0,0,1]]
         first_wp = np.array(self.start_pos)+np.array([0,0,1])
-        self.waypoints = [first_wp] + [np.array(w) for w in wp_list]
+        self.waypoints = [np.array(w) for w in wp_list]
         self.wp_idx = 0
         
         # --- OBSTACLES & PLANNING ---
@@ -308,7 +308,7 @@ class UAV(Agent):
             force_vec = (force_vec / total_norm) * self.max_repulsive_force
 
         return force_vec
-    
+
     # ----------------------------------------------------------------------
     # COMMUNICATION
     # ----------------------------------------------------------------------
@@ -411,7 +411,7 @@ class UAV(Agent):
         while True:
             try:
                 # Lecture non-bloquante
-                msg = self.sub_socket.recv_string()
+                msg = self.sub_socket.recv_string(flags=zmq.NOBLOCK)
                 delay = max(0,random.gauss(self.perception_delay_mean, self.perception_delay_std))
                 visible_time = self._sim_time + delay
                 self.message_buffer.append((visible_time,msg))
@@ -494,10 +494,7 @@ class UAV(Agent):
         # ==================== ADVANCED SENSOR FUSION ====================
         
         # 1. Read Sensors (Noisy)
-        if (self._sim_time - self.last_gnss_update_time) >= self.gnss_DT:
-            meas_pos, meas_vel = self.gnss.measure(gt["pos"], gt["vel"])
-            self.ekf.update(meas_pos, meas_vel)
-            self.last_gnss_update_time = self._sim_time
+
         
         if self._sim_time >= self.next_gnss_trigger:
             # 1. Mesure et Mise à jour EKF (inchangé)
@@ -588,7 +585,12 @@ class UAV(Agent):
             # Detect arrival at Waypoint
                 if self.wp_idx < len(self.waypoints):
                     dist_wp = np.linalg.norm(self.waypoints[self.wp_idx] - pos)
+
                     if dist_wp < 0.5 and not self.is_planning:
+                        print(f"\n[{self.name}] WAYPOINT VALIDÉ !")
+                        print(f" -> Cible théorique (Target) : {self.waypoints[self.wp_idx]}")
+                        print(f" -> Position réelle (PyBullet): {pos}")
+                        print(f" -> Distance calculée : {dist_wp} mètres")
                         print(f"[{self.name}] Waypoint {self.wp_idx} reached.")
                         self.wp_idx += 1
                         self.active_path = [] # Force a new calculation
@@ -732,7 +734,9 @@ class UAV(Agent):
         # Clean float formatting
         self.log_data_buffer.append(row)
         
-
+    # ----------------------------------------------------------------------
+    # SAVES FUNCTIONS
+    # ----------------------------------------------------------------------
 
     # Ferme le fichier csv à la fin de la simulation
     def write_csv(self):
@@ -749,3 +753,9 @@ class UAV(Agent):
 
         self.log_data_buffer.clear()
         print(f"[{self.name}] Sauvegarde CSV terminée.")
+
+    
+    # ----------------------------------------------------------------------
+    def get_state(self):
+
+        return
