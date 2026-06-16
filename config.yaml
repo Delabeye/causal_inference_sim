@@ -4,7 +4,7 @@
 simulation:
   connect_mode: ""
   dt: 0.00416
-  max_sim_time: 120.0
+  max_sim_time: 500.0
   run_config: 0
   port_in: 5556
   port_out: 5557
@@ -16,7 +16,16 @@ world:
   type: "generated"
   city: {filename: "city",n_blocks_x: 4, n_blocks_y: 4, block_size: 20.0, road_width: 10.0, buildings_per_side: 3}
   res: 0.25
-  Astar: {world_bounds: {x: [-60, 60], y: [-60, 60], z: [0.01, 60]}, safety_margin: 0.25}
+  Astar: {world_bounds: {x: [-60, 60], y: [-60, 60], z: [0.01, 60]}, safety_margin: 1.5}
+
+random_waypoints:
+  enabled: true
+  agents: ["drone_0"]
+  count: 4
+  altitude_range: [1.0, 10.0]
+  min_building_clearance: 3.0
+  map_margin: 8.0
+  max_attempts: 5000
 
 swarm:
   
@@ -140,4 +149,3 @@ agents:
     port_out: 5560
     ip: "localhost"
     period: 1.0
-

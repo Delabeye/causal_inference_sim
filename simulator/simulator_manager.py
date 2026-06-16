@@ -6,6 +6,7 @@ import pybullet_data
 import json
 import os
 import re
+import random
 
 from environment.world import World
 from entities.uav import UAV
@@ -126,6 +127,115 @@ class SimulationManager:
         self._create_swarm_from_config()
 
     # ------------------------------------------------------------------
+    def _point_building_clearance_xy(self, point_xy, buildings):
+        best = float("inf")
+        px, py = float(point_xy[0]), float(point_xy[1])
+
+        for building in buildings:
+            center = building.get("center", [0.0, 0.0, 0.0])
+            bx, by = float(center[0]), float(center[1])
+            width = float(building.get("width", 0.0))
+            length = float(building.get("length", 0.0))
+
+            dx = abs(px - bx) - width / 2.0
+            dy = abs(py - by) - length / 2.0
+            clearance = float(np.hypot(max(dx, 0.0), max(dy, 0.0)))
+            best = min(best, clearance)
+
+        return best if np.isfinite(best) else 100.0
+
+    def _sample_random_waypoint(self, rng, bounds, altitude_range, buildings, min_clearance, max_attempts, map_margin):
+        x_min, x_max = bounds.get("x", [-60.0, 60.0])
+        y_min, y_max = bounds.get("y", [-60.0, 60.0])
+        z_min, z_max = altitude_range
+        x_min = float(x_min) + map_margin
+        x_max = float(x_max) - map_margin
+        y_min = float(y_min) + map_margin
+        y_max = float(y_max) - map_margin
+
+        if x_min >= x_max or y_min >= y_max:
+            raise ValueError("random_waypoints.map_margin is too large for the configured world bounds.")
+
+        for _ in range(max_attempts):
+            candidate = np.array(
+                [
+                    rng.uniform(x_min, x_max),
+                    rng.uniform(y_min, y_max),
+                    rng.uniform(float(z_min), float(z_max)),
+                ],
+                dtype=float,
+            )
+            if self._point_building_clearance_xy(candidate[:2], buildings) >= min_clearance:
+                return candidate
+
+        raise RuntimeError(
+            "Impossible de générer un waypoint hors bâtiment. "
+            "Réduis min_clearance ou élargis world_bounds."
+        )
+
+    def _apply_random_waypoints(self, buildings):
+        rwp_cfg = self.config.get("random_waypoints", {})
+        if not rwp_cfg or not rwp_cfg.get("enabled", False):
+            return
+
+        run_id = int(self.config["simulation"]["run_config"])
+        base_seed = rwp_cfg.get("seed", None)
+        rng_seed = run_id if base_seed is None else int(base_seed) + run_id
+        rng = random.Random(rng_seed)
+
+        count = int(rwp_cfg.get("count", 3))
+        min_clearance = float(rwp_cfg.get("min_building_clearance", 2.0))
+        map_margin = float(rwp_cfg.get("map_margin", 8.0))
+        max_attempts = int(rwp_cfg.get("max_attempts", 5000))
+        altitude_range = rwp_cfg.get("altitude_range", [1.0, 10.0])
+        target_agents = rwp_cfg.get("agents", ["drone_0"])
+        if isinstance(target_agents, str):
+            target_agents = [target_agents]
+
+        astar_cfg = self.obstacles_config.get("Astar", {})
+        bounds = rwp_cfg.get("world_bounds", astar_cfg.get("world_bounds", {"x": [-60, 60], "y": [-60, 60]}))
+
+        generated = {}
+        for agent_cfg in self.config.get("agents", []):
+            if agent_cfg.get("type") != "uav":
+                continue
+            name = agent_cfg.get("name")
+            if name not in target_agents:
+                continue
+
+            waypoints = [
+                self._sample_random_waypoint(
+                    rng=rng,
+                    bounds=bounds,
+                    altitude_range=altitude_range,
+                    buildings=buildings,
+                    min_clearance=min_clearance,
+                    max_attempts=max_attempts,
+                    map_margin=map_margin,
+                ).round(3).tolist()
+                for _ in range(count)
+            ]
+            agent_cfg["waypoints"] = waypoints
+            generated[name] = waypoints
+
+        if generated:
+            os.makedirs("logs", exist_ok=True)
+            path = os.path.join("logs", f"run_{run_id}_waypoints.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "run": run_id,
+                        "seed": rng_seed,
+                        "min_building_clearance": min_clearance,
+                        "map_margin": map_margin,
+                        "waypoints": generated,
+                    },
+                    handle,
+                    indent=2,
+                )
+            print(f"[Waypoints] Random waypoints saved to {path}: {generated}")
+
+    # ------------------------------------------------------------------
     def load_scenario(self):
         print("Chargement du scénario...")
         
@@ -134,6 +244,7 @@ class SimulationManager:
         # Obstacles
         res=self.obstacles_config.get("res",0.25)
         world_type = self.obstacles_config.get("type","city")
+        obstacles = []
         if world_type == "generated":
             """Charge le sol + règle la physique."""
             obstacles=self.world.generate_city_urdf(self.obstacles_config.get("city",{}))
@@ -149,6 +260,7 @@ class SimulationManager:
             resolution=res, 
             )
             self.planner.build_from_buildings(obstacles)
+            self._apply_random_waypoints(obstacles)
         
         if world_type == "custom":
             world_file = self.obstacles_config.get("filename")
@@ -164,7 +276,13 @@ class SimulationManager:
             )
             self.planner.custom_heightmap()
         # Drones
+        astar_cfg = self.obstacles_config.get("Astar", {})
+        world_bounds = astar_cfg.get("world_bounds", None)
+        map_margin = float(self.config.get("random_waypoints", {}).get("map_margin", 8.0))
         for agent_cfg in self.config.get("agents", []):
+            if agent_cfg.get("type") == "uav" and world_bounds is not None:
+                agent_cfg["world_bounds"] = world_bounds
+                agent_cfg["world_bounds_margin"] = map_margin
             
             if agent_cfg.get("type") == "radar":
                 radar = RadarStation(config=agent_cfg, physics_client_id=self.physics_client_id, dt=self.dt)
