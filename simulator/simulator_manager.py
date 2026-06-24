@@ -91,6 +91,7 @@ class SimulationManager:
             *self.config["physics"]["gravity"],
             physicsClientId=self.physics_client_id,
         )
+        self.contact_dynamics_cfg = self.config.get("physics", {}).get("contact", {})
 
         # 2. Monde (sol + obstacles)
         self.world = World(self.physics_client_id)
@@ -235,6 +236,39 @@ class SimulationManager:
                 )
             print(f"[Waypoints] Random waypoints saved to {path}: {generated}")
 
+    def _apply_contact_dynamics(self, body_id, *, apply_to_base=True):
+        if not self.contact_dynamics_cfg:
+            return
+
+        kwargs = {}
+        for cfg_key, bullet_key in (
+            ("restitution", "restitution"),
+            ("lateral_friction", "lateralFriction"),
+            ("rolling_friction", "rollingFriction"),
+            ("spinning_friction", "spinningFriction"),
+            ("contact_damping", "contactDamping"),
+            ("contact_stiffness", "contactStiffness"),
+        ):
+            if cfg_key in self.contact_dynamics_cfg:
+                kwargs[bullet_key] = float(self.contact_dynamics_cfg[cfg_key])
+
+        if not kwargs:
+            return
+
+        link_indices = list(
+            range(p.getNumJoints(body_id, physicsClientId=self.physics_client_id))
+        )
+        if apply_to_base:
+            link_indices.insert(0, -1)
+
+        for link_id in link_indices:
+            p.changeDynamics(
+                body_id,
+                link_id,
+                physicsClientId=self.physics_client_id,
+                **kwargs,
+            )
+
     # ------------------------------------------------------------------
     def load_scenario(self):
         print("Chargement du scénario...")
@@ -249,12 +283,13 @@ class SimulationManager:
             """Charge le sol + règle la physique."""
             obstacles=self.world.generate_city_urdf(self.obstacles_config.get("city",{}))
 
-            p.loadURDF(
+            world_body_id = p.loadURDF(
             "assets/city.urdf",  # <--- Votre nouveau fichier
             basePosition=[0, 0, 0],
             useFixedBase=1,
             physicsClientId=self.physics_client_id,
             )
+            self._apply_contact_dynamics(world_body_id)
             self.planner = HeightmapAStar(
             self.obstacles_config.get("Astar",{}),
             resolution=res, 
@@ -264,12 +299,13 @@ class SimulationManager:
         
         if world_type == "custom":
             world_file = self.obstacles_config.get("filename")
-            p.loadURDF(
+            world_body_id = p.loadURDF(
             world_file,  # <--- Votre nouveau fichier
             basePosition=[0, 0, 0],
             useFixedBase=1,
             physicsClientId=self.physics_client_id,
             )
+            self._apply_contact_dynamics(world_body_id)
             self.planner = HeightmapAStar(
             self.obstacles_config.get("Astar",{}),
             resolution=res 
@@ -278,11 +314,11 @@ class SimulationManager:
         # Drones
         astar_cfg = self.obstacles_config.get("Astar", {})
         world_bounds = astar_cfg.get("world_bounds", None)
-        map_margin = float(self.config.get("random_waypoints", {}).get("map_margin", 8.0))
+        default_bounds_margin = float(astar_cfg.get("world_bounds_margin", 0.0))
         for agent_cfg in self.config.get("agents", []):
             if agent_cfg.get("type") == "uav" and world_bounds is not None:
                 agent_cfg["world_bounds"] = world_bounds
-                agent_cfg["world_bounds_margin"] = map_margin
+                agent_cfg.setdefault("world_bounds_margin", default_bounds_margin)
             
             if agent_cfg.get("type") == "radar":
                 radar = RadarStation(config=agent_cfg, physics_client_id=self.physics_client_id, dt=self.dt)
@@ -298,6 +334,7 @@ class SimulationManager:
                     planner=self.planner,
                     world_type = world_type
                 )
+                self._apply_contact_dynamics(uav.bodyId)
                 self.agents.append(uav)
 
         for radar in self.radars:
