@@ -52,16 +52,21 @@ All parameters are centralized in `config.yaml` to ensure experiment reproducibi
 | Section | Parameter | Description |
 | :--- | :--- | :--- |
 | **simulation** | `connect_mode` | Visual mode: "gui" for 3D interface or "direct" for headless/fast mode |
-| | `dt` | Physics simulation time-step (e.g., 0.00416 s for 2240 Hz) |
+| | `dt` | Physics simulation time-step (`1/240` s for the synchronized 240 Hz grid) |
 | | `max_sim_time` | Total simulation duration in seconds |
 | **physics** | `gravity` | Gravity vector $[x, y, z]$ applied to the world (e.g., $[0, 0, -9.81]$) |
 | **world** | `type` | Environment type ("generated" for procedural city or "custom") |
 | | `city` | Procedural parameters: block count (`n_blocks`), road width, and building density |
 | | `res` | Grid resolution in meters for the heightmap and path planner |
 | | `Astar` | Safety margins (`safety_margin`) and world bounds for trajectory calculation |
-| **swarm** | `leader` | NAme of the designated leader drone followed by others |
+| **swarm** | `leader` | Name of the designated leader drone followed by others |
 | | `min_sep` | Minimum separation distance maintained between swarm members |
 | | `avoid_gain` | Strength of the gain applied for inter-drone collision avoidance |
+| | `formation.mode` | `"fixed"` to use `formation.type`, or `"random"` to sample one formation per run |
+| | `formation.type` | Formation used in fixed mode: `triangle`, `trail`, `line`, `v`, `echelon_left`, `echelon_right`, or `diamond` |
+| | `formation.candidates` | Candidate formation names used in random mode |
+| | `formation.spacing` | Formation spacing as `[x, y, z]` in the leader body frame |
+| | `formation.offsets` | Optional explicit follower offsets, keyed by drone name, overriding generated formations |
 | | `port_in` / `port_out` | Network configuration for UDP communication between agents |
 | **agents** | `type` | Agent type: "uav" for drones or "radar" for fixed stations |
 | |`name`| Agent name for communications |
@@ -75,9 +80,55 @@ All parameters are centralized in `config.yaml` to ensure experiment reproducibi
 
 ## 4. Running the Simulator
 
-To start the simulation with the current configuration run:
+`main.py` is the single entry point for ordinary simulations and reproducible
+counterfactual datasets.
 
-`main.py`
+Run one GUI simulation:
+
+```bash
+python main.py simulate --config config.yaml --mode gui
+```
+
+Create the standard 60 s paired plan:
+
+```bash
+python main.py dataset plan \
+  --dataset datasets/all_formations_forks_60s \
+  --config config.yaml \
+  --start-run-id 0
+```
+
+Validate every effective run configuration without starting PyBullet:
+
+```bash
+python main.py dataset generate \
+  --dataset datasets/all_formations_forks_60s \
+  --config config.yaml \
+  --dry-run
+```
+
+Execute or resume the simulations:
+
+```bash
+python main.py dataset generate \
+  --dataset datasets/all_formations_forks_60s \
+  --config config.yaml \
+  --resume
+```
+
+Audit the completed dataset:
+
+```bash
+python main.py dataset verify \
+  --dataset datasets/all_formations_forks_60s
+```
+
+The pipeline writes `dataset_manifest.json` with the command, configuration
+and plan hashes, Git commit, software versions, run counts and final
+verification status. Per-run effective configs remain under `config_save/`.
+
+The scripts in `experiments/` remain independently executable and contain the
+specialized implementation used by this unified CLI.
 
 ---
 

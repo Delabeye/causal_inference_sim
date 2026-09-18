@@ -3,8 +3,10 @@
 #===============================================================
 simulation:
   connect_mode: ""
-  dt: 0.00416
-  max_sim_time: 250.0
+  # Exact 240 Hz physics grid. With ctrl_freq=80, one control update occurs
+  # every three physics steps without floating-point scheduling drift.
+  dt: 0.004166666666666667
+  max_sim_time: 60.0
   run_config: 0
   port_in: 5556
   port_out: 5557
@@ -32,6 +34,29 @@ random_waypoints:
   map_margin: 8.0
   max_attempts: 5000
 
+interventions:
+  enabled: false
+  events:
+    - id: "push_drone_1_y"
+      targets: ["drone_1"]
+      start_time: 20.0
+      duration: 1.0
+      type: "controlled_push"
+      force: [0.0, 0.1, 0.0]
+      frame: "world"
+
+# Shared by every UAV. The leader holds its takeoff position until every
+# follower has completed the smooth transition to its formation offset.
+formation_control:
+  safe_altitude: 1.5
+  takeoff_altitude_tolerance: 0.05
+  takeoff_min_duration: 0.5
+  takeoff_max_abs_vz: 0.6
+  takeoff_unstable_grace_duration: 0.25
+  transition_duration: 1.5
+  transition_speed_limit: 1.5
+  hold_leader_until_ready: true
+
 swarm:
   
   - id: "A"
@@ -39,6 +64,22 @@ swarm:
     min_sep: 0.6        
     avoid_gain: 0.5    
     ip: "localhost" 
+    formation:
+      mode: "random"   # "fixed" ou "random"
+      type: "triangle"
+      # Relational mode: followers inherit their reference velocity. The
+      # offset is only the equilibrium of a directed elastic interaction; it
+      # is no longer added directly to an absolute position target.
+      control_mode: "relational"  # "relational" or legacy "direct_offset"
+      attraction_gain: 0.8
+      velocity_alignment_gain: 0.35
+      relational_lookahead_s: 0.25
+      max_relational_correction_speed: 1.5
+      ready_tolerance: 0.25
+      # "line" uses a directed predecessor chain; the other formations use
+      # the leader-star control topology.
+      candidates: ["triangle", "trail", "line", "v"]
+      spacing: [1.0, 1.0, 0.0]
 
 agents:
   #------------------- LEADER (0,0,1) ------------------------
@@ -51,7 +92,7 @@ agents:
     mass: 0.027
     start_pos: [0.0, 0.0, 0.0]
     start_orn_euler: [0.0, 0.0, 0.0]
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5, safety_radius: 0.5, max_repulsive_force: 1.0}
     waypoints: [[-30.0, 0.0, 1.0],[-60.0, 60.0, 1.0],[60.0, 60.0, 10.0]]
     ctrl_freq: 80
     communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
@@ -78,7 +119,7 @@ agents:
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
     ctrl_freq: 80
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5, safety_radius: 0.5, max_repulsive_force: 1.0}
     communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
     sensors:
       gnss: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05,frequency: 10, delay_mean: 0.1,delay_std: 0.01}
@@ -102,7 +143,7 @@ agents:
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
     ctrl_freq: 80
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5, safety_radius: 0.5, max_repulsive_force: 1.0}
     communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
     sensors:
       gnss: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05,frequency: 10, delay_mean: 0.1,delay_std: 0.01}
@@ -126,10 +167,8 @@ agents:
     start_pos: [-1.0, 0.0, 0.0]
     start_orn_euler: [0.0, 0.0, 0.0]
     waypoints: []
-    safety_radius: 0.35
-    max_repulsive_force: 1.0
     ctrl_freq: 80
-    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5}
+    physics: {thrust_coeff: 3.16e-10, torque_coeff: 7.94e-12, max_rpm: 22000.0, motor_link_indices: [0, 1, 2, 3], max_speed: 5, safety_radius: 0.5, max_repulsive_force: 1.0}
     communication: {com_period: 0.1, com_delay_mean: 0.1, com_delay_std: 0.01}
     sensors:
       gnss: {enabled: true, position_noise_std: 0.1, velocity_noise_std: 0.05,frequency: 10, delay_mean: 0.1,delay_std: 0.01}

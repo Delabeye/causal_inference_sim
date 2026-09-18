@@ -7,6 +7,7 @@ import json
 import os
 import re
 import random
+from dataclasses import replace
 
 from environment.world import World
 from entities.uav import UAV
@@ -14,6 +15,14 @@ from swarm.swarm import Swarm
 from entities.static_sensor import RadarStation
 from Control.Path_planning import HeightmapAStar 
 from swarm.swarmnetwork import SwarmNetwork
+from simulator.interventions import (
+    InterventionRuntime,
+    load_intervention_events,
+    validate_intervention_targets,
+)
+from simulator.learning_trace_logger import LearningTraceLogger
+from simulator.relational_ground_truth_logger import RelationalGroundTruthLogger
+from simulator.state_checkpoint import SimulationCheckpoint
 
 class SimulationManager:
     """SimulationManager
@@ -50,39 +59,91 @@ class SimulationManager:
     def __init__(self, config: dict):
         self.config = config
 
-        # On allume le proxy pour toutes les simulation
-        self.network = SwarmNetwork(port_in=5556, port_out=5557)
-        self.network.init_proxy()
-
-        # Auto-détection de la run 
-        log_dir = "logs"
-        next_run_id = 0
-        if os.path.exists(log_dir):
-            for filename in os.listdir(log_dir):
-                match = re.search(r'run_(\d+)', filename)
-                if match:
-                    run_id = int(match.group(1))
-                    if run_id >= next_run_id:
-                        next_run_id = run_id + 1
+        # Auto-détection de la run, sauf pour les batchs expérimentaux seedés
+        # qui doivent pouvoir fixer explicitement le run_id.
+        sim_cfg = self.config.setdefault("simulation", {})
+        self.deterministic_execution = bool(
+            sim_cfg.get("deterministic_execution", False)
+        )
+        # ZeroMQ is intentionally bypassed for paired experiments. Its delivery
+        # depends on wall-clock thread scheduling and made two identically seeded
+        # DIRECT runs diverge before an intervention. In deterministic mode the
+        # Swarm object uses a simulation-time message queue instead.
+        self.network = None
+        if not self.deterministic_execution:
+            self.network = SwarmNetwork(
+                port_in=int(sim_cfg.get("port_in", 5556)),
+                port_out=int(sim_cfg.get("port_out", 5557)),
+            )
+        self.log_dir = str(sim_cfg.get("log_dir", "logs"))
+        if bool(sim_cfg.get("fixed_run_config", False)):
+            next_run_id = int(sim_cfg.get("run_config", 0))
+        else:
+            next_run_id = 0
+            if os.path.exists(self.log_dir):
+                for filename in os.listdir(self.log_dir):
+                    match = re.search(r'run_(\d+)', filename)
+                    if match:
+                        run_id = int(match.group(1))
+                        if run_id >= next_run_id:
+                            next_run_id = run_id + 1
 
         self.config["simulation"]["run_config"] = next_run_id
+        shared_formation_control = self.config.get("formation_control", {})
+        if shared_formation_control is None:
+            shared_formation_control = {}
+        if not isinstance(shared_formation_control, dict):
+            raise ValueError("formation_control must be a YAML mapping.")
         for agent_cfg in self.config.get("agents", []):
             agent_cfg["run_config"] = next_run_id
+            agent_cfg["log_dir"] = self.log_dir
+            agent_cfg["deterministic_communication"] = (
+                self.deterministic_execution
+            )
+            agent_formation_control = agent_cfg.get("formation_control", {})
+            if agent_formation_control is None:
+                agent_formation_control = {}
+            if not isinstance(agent_formation_control, dict):
+                raise ValueError(
+                    f"formation_control for agent {agent_cfg.get('name')} "
+                    "must be a YAML mapping."
+                )
+            agent_cfg["formation_control"] = {
+                **shared_formation_control,
+                **agent_formation_control,
+            }
 
+        self.effective_seed = None
+        base_seed = self.config["simulation"].get("seed", None)
+        if base_seed is not None:
+            seed_offset = next_run_id if bool(self.config["simulation"].get("seed_add_run_id", True)) else 0
+            self.effective_seed = int(base_seed) + seed_offset
+            random.seed(self.effective_seed)
+            np.random.seed(self.effective_seed)
+            self.config["simulation"]["effective_seed"] = self.effective_seed
+            print(f"[Seed] run={next_run_id}, effective_seed={self.effective_seed}")
+        if self.deterministic_execution:
+            seed_root = int(
+                self.effective_seed if self.effective_seed is not None else 0
+            )
+            for agent_cfg in self.config.get("agents", []):
+                agent_name = str(agent_cfg.get("name", agent_cfg.get("type", "agent")))
+                stable_offset = sum(
+                    (idx + 1) * ord(char) for idx, char in enumerate(agent_name)
+                )
+                agent_cfg["deterministic_seed"] = seed_root + stable_offset
 
         self.sim_time = 0.0
         self.dt = float(self.config["simulation"]["dt"])
         # 1. Connexion PyBullet
         mode_str = str(self.config["simulation"]["connect_mode"]).strip().lower()
         mode = p.GUI if mode_str == "gui" else p.DIRECT
-        self.physics_client_id = p.connect(mode)
+        connect_options = "--numThreads=1" if self.deterministic_execution else ""
+        self.physics_client_id = p.connect(mode, options=connect_options)
         if self.physics_client_id < 0:
             raise ConnectionError("Impossible de se connecter à PyBullet.")
         
-        # Pour le bon fonctionnement des logs d'entrainement
-        self.is_gui_mode = True if mode_str == "gui" else False
-        # Gerer la pause la simulation
-        self.is_paused = False
+        self.is_gui_mode = mode_str == "gui"
 
         print(f"Connecté à PyBullet, client_id={self.physics_client_id}")
 
@@ -91,6 +152,12 @@ class SimulationManager:
             *self.config["physics"]["gravity"],
             physicsClientId=self.physics_client_id,
         )
+        p.setTimeStep(self.dt, physicsClientId=self.physics_client_id)
+        if self.deterministic_execution:
+            p.setPhysicsEngineParameter(
+                deterministicOverlappingPairs=1,
+                physicsClientId=self.physics_client_id,
+            )
         self.contact_dynamics_cfg = self.config.get("physics", {}).get("contact", {})
 
         # 2. Monde (sol + obstacles)
@@ -105,27 +172,258 @@ class SimulationManager:
                 physicsClientId=self.physics_client_id,
             )
 
-            # Boutton pause et quit
-            # self.btn_pause = p.addUserDebugParameter("Pause / Play", 1, -1, 1, physicsClientId = self.physics_client_id)
-            # self.btn_quit = p.addUserDebugParameter("Quit Simulation", 1, -1, 1, physicsClientId = self.physics_client_id)
-
-            # self.count_pause_clicks = 0
-            # self.count_quit_click = 0
-
-        # Liste de tous les agents (UAV + radars)
         self.agents: list[UAV | RadarStation] = []
-
-        # Liste des essaims (on n'en crée qu'un, mais on garde une liste)
         self.swarms: list[Swarm] = []
-        
-        # Liste des radars
+        self.formation_run_metadata = {}
+        self.intervention_events = load_intervention_events(
+            self.config.get("interventions", {})
+        )
+        self.intervention_runtime = InterventionRuntime(self.intervention_events)
+        self._last_intervention_applications = []
+        fork_cfg = self.config.get("counterfactual_forks", {}) or {}
+        self.counterfactual_forks_enabled = bool(fork_cfg.get("enabled", False))
+        self.counterfactual_fork_horizon = float(
+            fork_cfg.get(
+                "rollout_horizon_s",
+                self.config.get("experiment", {})
+                .get("snapshot_schedule", {})
+                .get("rollout_horizon_s", 8.0),
+            )
+        )
+        self.counterfactual_fork_records = []
+        self.counterfactual_fork_manifest_path = os.path.join(
+            self.log_dir,
+            f"run_{next_run_id}_counterfactual_forks.json",
+        )
+        self.relational_logger = None
+        self.learning_trace_logger = None
+        self._last_relational_control_indices = None
+        self._run_artifacts_finalized = False
         self.radars: list[RadarStation] = []
-        
-        # 3. Charger scénario (obstacles + drones + objectifs éventuels)
-        self.load_scenario()
 
-        # 4. Créer un essaim si demandé dans la config
+        self.load_scenario()
         self._create_swarm_from_config()
+        self._initialize_run_loggers()
+
+    def _initialize_run_loggers(self):
+        run_id = int(self.config["simulation"].get("run_config", 0))
+        uavs = [agent for agent in self.agents if isinstance(agent, UAV)]
+        validate_intervention_targets(
+            self.intervention_events,
+            (agent.name for agent in uavs),
+        )
+        self.relational_logger = RelationalGroundTruthLogger(
+            log_dir=self.log_dir,
+            run_id=run_id,
+            physics_client_id=self.physics_client_id,
+        )
+        self.learning_trace_logger = LearningTraceLogger(
+            log_dir=self.log_dir,
+            run_id=run_id,
+            uavs=uavs,
+            events=self.intervention_events,
+        )
+        self._last_relational_control_indices = tuple(
+            (agent.name, int(getattr(agent, "control_update_index", 0)))
+            for agent in uavs
+        )
+        self._run_artifacts_finalized = False
+
+    def _log_control_step_artifacts(self):
+        uavs = [agent for agent in self.agents if isinstance(agent, UAV)]
+        current_indices = tuple(
+            (agent.name, int(getattr(agent, "control_update_index", 0)))
+            for agent in uavs
+        )
+        if current_indices == self._last_relational_control_indices:
+            return
+        self._last_relational_control_indices = current_indices
+        log_time = max((float(agent._sim_time) for agent in uavs), default=float(self.sim_time))
+        if self.relational_logger is not None:
+            self.relational_logger.log_step(log_time, uavs)
+        if self.learning_trace_logger is not None:
+            self.learning_trace_logger.log_step(
+                log_time,
+                self._last_intervention_applications,
+            )
+
+    def _apply_controlled_interventions(self):
+        uavs = [agent for agent in self.agents if isinstance(agent, UAV)]
+        self._last_intervention_applications = self.intervention_runtime.apply(
+            self.sim_time,
+            uavs,
+        )
+
+    def _advance_simulation_step(
+        self,
+        *,
+        apply_interventions: bool,
+        log_main_artifacts: bool,
+    ) -> None:
+        if apply_interventions:
+            self._apply_controlled_interventions()
+        else:
+            self._last_intervention_applications = []
+            for agent in self.agents:
+                if isinstance(agent, UAV):
+                    agent.clear_intervention_state()
+
+        for swarm in self.swarms:
+            swarm.update()
+        for agent in self.agents:
+            if isinstance(agent, UAV):
+                agent.think_and_act()
+            elif isinstance(agent, RadarStation):
+                if self.sim_time > agent.radar_period + agent.radar_last_time:
+                    agent.radar_last_time = self.sim_time
+                    agent.think_and_act(self.sim_time)
+
+        p.stepSimulation(physicsClientId=self.physics_client_id)
+        if log_main_artifacts:
+            self._log_control_step_artifacts()
+        self.sim_time += self.dt
+
+    @staticmethod
+    def _control_indices(uavs):
+        return tuple(
+            (agent.name, int(getattr(agent, "control_update_index", 0)))
+            for agent in uavs
+        )
+
+    def _run_counterfactual_branch(
+        self,
+        event,
+        event_index: int,
+        checkpoint: SimulationCheckpoint,
+    ) -> None:
+        checkpoint.restore()
+        actual_time = float(self.sim_time)
+        branch_event = replace(
+            event,
+            start_time=actual_time,
+            end_time=actual_time + event.duration,
+        )
+        branch_runtime = InterventionRuntime([branch_event])
+        original_runtime = self.intervention_runtime
+        uavs = [agent for agent in self.agents if isinstance(agent, UAV)]
+        artifact_stem = f"run_{self.config['simulation']['run_config']}_fork_{event_index:03d}"
+        branch_logger = LearningTraceLogger(
+            log_dir=self.log_dir,
+            run_id=int(self.config["simulation"]["run_config"]),
+            uavs=uavs,
+            events=[branch_event],
+            artifact_stem=artifact_stem,
+        )
+        branch_last_indices = self._control_indices(uavs)
+        branch_error = None
+        try:
+            self.intervention_runtime = branch_runtime
+            for uav in uavs:
+                uav.logging_enabled = False
+            branch_end = actual_time + self.counterfactual_fork_horizon
+            while self.sim_time < branch_end - 1e-12:
+                self._advance_simulation_step(
+                    apply_interventions=True,
+                    log_main_artifacts=False,
+                )
+                current_indices = self._control_indices(uavs)
+                if current_indices == branch_last_indices:
+                    continue
+                branch_last_indices = current_indices
+                log_time = max(
+                    (float(agent._sim_time) for agent in uavs),
+                    default=float(self.sim_time),
+                )
+                branch_logger.log_step(
+                    log_time,
+                    self._last_intervention_applications,
+                )
+        except Exception as exc:
+            branch_error = exc
+        finally:
+            branch_logger.close()
+            self.intervention_runtime = original_runtime
+
+        if branch_error is not None:
+            raise branch_error
+        self.counterfactual_fork_records.append(
+            {
+                "fork_index": event_index,
+                "event": event.as_dict(),
+                "scheduled_time": event.start_time,
+                "actual_snapshot_time": actual_time,
+                "rollout_horizon_s": self.counterfactual_fork_horizon,
+                "baseline_trace": str(self.learning_trace_logger.path),
+                "intervention_trace": str(branch_logger.path),
+                "event_catalog": str(branch_logger.event_catalog_path),
+                "checkpoint_backend": "pybullet_state_plus_python_logic",
+            }
+        )
+
+    def _write_counterfactual_fork_manifest(self) -> None:
+        os.makedirs(self.log_dir, exist_ok=True)
+        payload = {
+            "run": int(self.config["simulation"].get("run_config", 0)),
+            "matrix_convention": "row=receiver,column=sender",
+            "parent_branch": "baseline_without_interventions",
+            "forks": self.counterfactual_fork_records,
+        }
+        with open(
+            self.counterfactual_fork_manifest_path,
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(payload, handle, indent=2)
+
+    def _run_with_counterfactual_forks(self) -> None:
+        if not self.deterministic_execution or self.is_gui_mode:
+            raise RuntimeError(
+                "counterfactual_forks requires DIRECT mode and deterministic_execution=true."
+            )
+        if self.counterfactual_fork_horizon <= 0.0:
+            raise ValueError("counterfactual fork rollout_horizon_s must be positive.")
+
+        max_time = float(self.config["simulation"]["max_sim_time"])
+        events = sorted(self.intervention_events, key=lambda item: item.start_time)
+        for event_index, event in enumerate(events):
+            if event.start_time + self.counterfactual_fork_horizon > max_time + 1e-9:
+                raise ValueError(
+                    f"Fork '{event.id}' does not fit before max_sim_time={max_time}."
+                )
+
+        snapshots = []
+        next_event = 0
+        while self.sim_time < max_time and p.isConnected(self.physics_client_id):
+            while (
+                next_event < len(events)
+                and self.sim_time + 1e-12 >= events[next_event].start_time
+            ):
+                snapshots.append(
+                    (
+                        next_event,
+                        events[next_event],
+                        SimulationCheckpoint.capture(self),
+                    )
+                )
+                next_event += 1
+            self._advance_simulation_step(
+                apply_interventions=False,
+                log_main_artifacts=True,
+            )
+
+        final_baseline = SimulationCheckpoint.capture(self)
+        try:
+            for event_index, event, checkpoint in snapshots:
+                self._run_counterfactual_branch(event, event_index, checkpoint)
+        finally:
+            self.intervention_runtime = InterventionRuntime(self.intervention_events)
+            final_baseline.restore()
+            final_baseline.release()
+            for _, _, checkpoint in snapshots:
+                checkpoint.release()
+
+        self._write_counterfactual_fork_manifest()
+        self._finalize_run_artifacts()
 
     # ------------------------------------------------------------------
     def _point_building_clearance_xy(self, point_xy, buildings):
@@ -181,7 +479,10 @@ class SimulationManager:
 
         run_id = int(self.config["simulation"]["run_config"])
         base_seed = rwp_cfg.get("seed", None)
-        rng_seed = run_id if base_seed is None else int(base_seed) + run_id
+        add_run_id = bool(rwp_cfg.get("seed_add_run_id", True))
+        seed_offset = run_id if add_run_id else 0
+        rng_seed = run_id if base_seed is None else int(base_seed) + seed_offset
+        rwp_cfg["effective_seed"] = rng_seed
         rng = random.Random(rng_seed)
 
         count = int(rwp_cfg.get("count", 3))
@@ -220,8 +521,8 @@ class SimulationManager:
             generated[name] = waypoints
 
         if generated:
-            os.makedirs("logs", exist_ok=True)
-            path = os.path.join("logs", f"run_{run_id}_waypoints.json")
+            os.makedirs(self.log_dir, exist_ok=True)
+            path = os.path.join(self.log_dir, f"run_{run_id}_waypoints.json")
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump(
                     {
@@ -394,6 +695,299 @@ class SimulationManager:
         )
 
     # ------------------------------------------------------------------
+    def _resolve_swarm_leader(self, members, leader_name):
+        if leader_name is None:
+            return members[0]
+
+        for member in members:
+            if getattr(member, "name", None) == leader_name:
+                return member
+
+        raise ValueError(f"Aucun UAV avec name='{leader_name}' trouvé pour le leader.")
+
+    def _normalize_formation_config(self, swarm_cfg):
+        formation_cfg = swarm_cfg.get("formation", {})
+        if formation_cfg is None:
+            formation_cfg = {}
+        elif isinstance(formation_cfg, str):
+            formation_cfg = {"type": formation_cfg}
+        elif not isinstance(formation_cfg, dict):
+            raise ValueError("swarm.formation doit être une chaîne ou un dictionnaire YAML.")
+
+        cfg = dict(formation_cfg)
+
+        legacy_keys = {
+            "formation_type": "type",
+            "formation_mode": "mode",
+            "formation_candidates": "candidates",
+            "formation_spacing": "spacing",
+            "formation_spacing_x": "spacing_x",
+            "formation_spacing_y": "spacing_y",
+            "formation_spacing_z": "spacing_z",
+            "formation_seed": "seed",
+            "formation_body_offsets": "offsets",
+        }
+        for old_key, new_key in legacy_keys.items():
+            if old_key in swarm_cfg and new_key not in cfg:
+                cfg[new_key] = swarm_cfg[old_key]
+
+        return cfg
+
+    def _formation_spacing(self, cfg):
+        spacing = cfg.get("spacing", 1.0)
+        if isinstance(spacing, (list, tuple)):
+            if len(spacing) == 0:
+                spacing_x = spacing_y = 1.0
+                spacing_z = 0.0
+            elif len(spacing) == 1:
+                spacing_x = spacing_y = float(spacing[0])
+                spacing_z = 0.0
+            elif len(spacing) == 2:
+                spacing_x, spacing_y = map(float, spacing)
+                spacing_z = 0.0
+            else:
+                spacing_x, spacing_y, spacing_z = map(float, spacing[:3])
+        else:
+            spacing_x = spacing_y = float(spacing)
+            spacing_z = 0.0
+
+        spacing_x = float(cfg.get("spacing_x", spacing_x))
+        spacing_y = float(cfg.get("spacing_y", spacing_y))
+        spacing_z = float(cfg.get("spacing_z", spacing_z))
+        return spacing_x, spacing_y, spacing_z
+
+    def _parse_custom_formation_offsets(self, offsets_cfg, followers):
+        if offsets_cfg is None:
+            return None
+
+        if isinstance(offsets_cfg, dict):
+            offsets = {}
+            for follower in followers:
+                if follower.name not in offsets_cfg:
+                    raise ValueError(
+                        f"formation.offsets ne contient pas d'offset pour '{follower.name}'."
+                    )
+                offsets[follower.name] = np.array(offsets_cfg[follower.name], dtype=float)
+        elif isinstance(offsets_cfg, list):
+            if len(offsets_cfg) != len(followers):
+                raise ValueError(
+                    "formation.offsets en liste doit contenir exactement un offset par follower."
+                )
+            offsets = {
+                follower.name: np.array(offset, dtype=float)
+                for follower, offset in zip(followers, offsets_cfg)
+            }
+        else:
+            raise ValueError("formation.offsets doit être un dictionnaire ou une liste.")
+
+        for offset in offsets.values():
+            if offset.shape != (3,):
+                raise ValueError("Chaque offset de formation doit être un vecteur 3D [x, y, z].")
+
+        return offsets
+
+    def _generate_formation_offsets(self, formation_type, followers, spacing_x, spacing_y, spacing_z):
+        formation_type = str(formation_type).strip().lower()
+        formation_type = {
+            "triangular": "triangle",
+            "single_file": "trail",
+            "follow": "trail",
+            "follow_the_leader": "trail",
+            "v_shape": "v",
+            "vee": "v",
+        }.get(formation_type, formation_type)
+
+        offsets = {}
+        n = len(followers)
+        if n == 0:
+            return offsets
+
+        if formation_type == "triangle":
+            idx = 0
+            row = 1
+            while idx < n:
+                num_in_row = row
+                center = 0.5 * (num_in_row - 1)
+                for j in range(num_in_row):
+                    if idx >= n:
+                        break
+                    offsets[followers[idx].name] = np.array(
+                        [-row * spacing_x, (j - center) * spacing_y, spacing_z],
+                        dtype=float,
+                    )
+                    idx += 1
+                row += 1
+        elif formation_type in {"trail", "column"}:
+            for idx, follower in enumerate(followers):
+                offsets[follower.name] = np.array(
+                    [-(idx + 1) * spacing_x, 0.0, (idx + 1) * spacing_z],
+                    dtype=float,
+                )
+        elif formation_type == "line":
+            for idx, follower in enumerate(followers):
+                offsets[follower.name] = np.array(
+                    [-(idx + 1) * spacing_x, 0.0, (idx + 1) * spacing_z],
+                    dtype=float,
+                )
+        elif formation_type == "v":
+            for idx, follower in enumerate(followers):
+                rank = (idx // 2) + 1
+                side = -1.0 if idx % 2 == 0 else 1.0
+                offsets[follower.name] = np.array(
+                    [-rank * spacing_x, side * rank * spacing_y, rank * spacing_z],
+                    dtype=float,
+                )
+        elif formation_type == "echelon_left":
+            for idx, follower in enumerate(followers):
+                rank = idx + 1
+                offsets[follower.name] = np.array(
+                    [-rank * spacing_x, -rank * spacing_y, rank * spacing_z],
+                    dtype=float,
+                )
+        elif formation_type == "echelon_right":
+            for idx, follower in enumerate(followers):
+                rank = idx + 1
+                offsets[follower.name] = np.array(
+                    [-rank * spacing_x, rank * spacing_y, rank * spacing_z],
+                    dtype=float,
+                )
+        elif formation_type == "diamond":
+            base = [
+                [-spacing_x, 0.0, spacing_z],
+                [-2.0 * spacing_x, -spacing_y, 2.0 * spacing_z],
+                [-2.0 * spacing_x, spacing_y, 2.0 * spacing_z],
+                [-3.0 * spacing_x, 0.0, 3.0 * spacing_z],
+            ]
+            for idx, follower in enumerate(followers):
+                if idx < len(base):
+                    offset = base[idx]
+                else:
+                    row = idx - len(base) + 4
+                    side = -1.0 if idx % 2 == 0 else 1.0
+                    offset = [-row * spacing_x, side * spacing_y, row * spacing_z]
+                offsets[follower.name] = np.array(offset, dtype=float)
+        else:
+            allowed = "triangle, trail, column, line, v, echelon_left, echelon_right, diamond"
+            raise ValueError(f"Formation inconnue '{formation_type}'. Formations disponibles: {allowed}.")
+
+        return offsets
+
+    def _build_formation_body_offsets(self, swarm_id, members, swarm_cfg, leader_name):
+        leader = self._resolve_swarm_leader(members, leader_name)
+        followers = [member for member in members if member is not leader]
+        formation_cfg = self._normalize_formation_config(swarm_cfg)
+        rng_seed = None
+        configured_seed = formation_cfg.get("seed", None)
+
+        custom_offsets = self._parse_custom_formation_offsets(
+            formation_cfg.get("offsets"), followers
+        )
+        if custom_offsets is not None:
+            selected_type = "custom"
+            offsets = custom_offsets
+        else:
+            random_enabled = bool(formation_cfg.get("random", False))
+            mode = str(formation_cfg.get("mode", "fixed")).strip().lower()
+            requested_type = str(formation_cfg.get("type", "triangle")).strip().lower()
+            random_enabled = random_enabled or mode == "random" or requested_type == "random"
+
+            if random_enabled:
+                candidates = formation_cfg.get(
+                    "candidates",
+                    ["triangle", "trail", "line", "v", "echelon_left", "echelon_right"],
+                )
+                if not candidates:
+                    raise ValueError("formation.candidates ne peut pas être vide en mode random.")
+
+                run_id = int(self.config["simulation"].get("run_config", 0))
+                base_seed = formation_cfg.get("seed", None)
+                rng_seed = run_id if base_seed is None else int(base_seed) + run_id
+                rng = random.Random(rng_seed)
+                selected = rng.choice(candidates)
+                selected_type = selected.get("type", "triangle") if isinstance(selected, dict) else selected
+                if isinstance(selected, dict):
+                    selected_cfg = dict(formation_cfg)
+                    selected_cfg.update(selected)
+                    formation_cfg = selected_cfg
+            else:
+                selected_type = requested_type
+
+            spacing_x, spacing_y, spacing_z = self._formation_spacing(formation_cfg)
+            offsets = self._generate_formation_offsets(
+                selected_type, followers, spacing_x, spacing_y, spacing_z
+            )
+
+        run_id = int(self.config["simulation"].get("run_config", 0))
+        formation_info = {
+            "run": run_id,
+            "swarm_id": swarm_id,
+            "leader": leader.name,
+            "formation_type": str(selected_type),
+            "offsets": {name: offset.tolist() for name, offset in offsets.items()},
+            "control": {
+                "mode": str(
+                    formation_cfg.get("control_mode", "relational")
+                ),
+                "offset_semantics": "directed_relative_equilibrium",
+                "attraction_gain": float(
+                    formation_cfg.get("attraction_gain", 0.8)
+                ),
+                "velocity_alignment_gain": float(
+                    formation_cfg.get("velocity_alignment_gain", 0.35)
+                ),
+                "relational_lookahead_s": float(
+                    formation_cfg.get("relational_lookahead_s", 0.25)
+                ),
+                "max_relational_correction_speed": float(
+                    formation_cfg.get(
+                        "max_relational_correction_speed", 1.5
+                    )
+                ),
+                "ready_tolerance": float(
+                    formation_cfg.get("ready_tolerance", 0.25)
+                ),
+            },
+        }
+        if str(selected_type).strip().lower() == "line":
+            parent_by_follower = {}
+            previous_name = leader.name
+            for follower in followers:
+                parent_by_follower[follower.name] = previous_name
+                previous_name = follower.name
+            formation_info.update(
+                {
+                    "topology": "directed_chain",
+                    "parent_by_follower": parent_by_follower,
+                }
+            )
+        else:
+            formation_info.update(
+                {
+                    "topology": "leader_star",
+                    "parent_by_follower": {
+                        follower.name: leader.name for follower in followers
+                    },
+                }
+            )
+        if configured_seed is not None:
+            formation_info["configured_seed"] = int(configured_seed)
+        if rng_seed is not None:
+            formation_info["effective_seed"] = rng_seed
+
+        self.formation_run_metadata[swarm_id] = formation_info
+
+        os.makedirs(self.log_dir, exist_ok=True)
+        path = os.path.join(self.log_dir, f"run_{run_id}_formation_{swarm_id}.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(formation_info, handle, indent=2)
+
+        print(
+            f"[Swarm] Formation groupe '{swarm_id}': {selected_type} "
+            f"-> {formation_info['offsets']} (saved to {path})"
+        )
+        return offsets
+
+    # ------------------------------------------------------------------
     def _create_swarm_from_config(self):
         """
         Crée les essaims en associant les drones par 'swarm_id' 
@@ -447,21 +1041,79 @@ class SimulationManager:
             leader_name = specific_cfg.get("leader", None) # Le nom du drone leader
             min_sep = float(specific_cfg.get("min_sep", 0.6))
             avoid_gain = float(specific_cfg.get("avoid_gain", 0.5))
+            formation_body_offsets = self._build_formation_body_offsets(
+                s_id, members, specific_cfg, leader_name
+            )
+            formation_info = self.formation_run_metadata.get(s_id, {})
+            reference_by_follower = formation_info.get("parent_by_follower", {})
+            relational_cfg = formation_info.get("control", {})
             
             # Paramètres Réseau
             ip = specific_cfg.get("ip", "localhost")
 
             # Création de l'instance
+            network_in = (
+                self.network.port_in
+                if self.network is not None
+                else int(self.config["simulation"].get("port_in", 5556))
+            )
+            network_out = (
+                self.network.port_out
+                if self.network is not None
+                else int(self.config["simulation"].get("port_out", 5557))
+            )
+            communication_seed = int(
+                self.effective_seed
+                if self.effective_seed is not None
+                else self.config["simulation"].get("run_config", 0)
+            ) + sum((idx + 1) * ord(char) for idx, char in enumerate(s_id))
             new_swarm = Swarm(
                 agents=members,
                 leader_name=leader_name,
-                formation_body_offsets = None,
+                formation_body_offsets=formation_body_offsets,
+                reference_by_follower=reference_by_follower,
                 min_sep=min_sep,
                 avoid_gain=avoid_gain,
-                port_in=self.network.port_in,
-                port_out=self.network.port_out,
-                ip=ip
+                formation_control_mode=relational_cfg.get(
+                    "mode", "relational"
+                ),
+                attraction_gain=float(
+                    relational_cfg.get("attraction_gain", 0.8)
+                ),
+                velocity_alignment_gain=float(
+                    relational_cfg.get("velocity_alignment_gain", 0.35)
+                ),
+                relational_lookahead_s=float(
+                    relational_cfg.get("relational_lookahead_s", 0.25)
+                ),
+                max_relational_correction_speed=float(
+                    relational_cfg.get(
+                        "max_relational_correction_speed", 1.5
+                    )
+                ),
+                formation_ready_tolerance=float(
+                    relational_cfg.get("ready_tolerance", 0.25)
+                ),
+                port_in=network_in,
+                port_out=network_out,
+                ip=ip,
+                deterministic_communication=self.deterministic_execution,
+                communication_seed=communication_seed,
             )
+            formation_type = formation_info.get("formation_type", "none")
+            for member in members:
+                desired_offset = (
+                    np.zeros(3)
+                    if member is new_swarm.leader
+                    else new_swarm.reference_offsets.get(member.name, np.zeros(3))
+                )
+                member.set_formation_metadata(
+                    formation_type=formation_type,
+                    desired_offset=desired_offset,
+                    leader_ref=new_swarm.reference_agents.get(member.name),
+                    swarm_id=s_id,
+                    control_mode=new_swarm.formation_control_mode,
+                )
             self.swarms.append(new_swarm)
         
     
@@ -537,104 +1189,190 @@ class SimulationManager:
     
     # ------------------------------------------------------------------
     def run(self):
-        """
-        Boucle principale de simulation.
-        """
+        """Run control, physics and synchronized logging until ``max_sim_time``."""
+        if self.counterfactual_forks_enabled:
+            self._run_with_counterfactual_forks()
+            return
+
         max_time = float(self.config["simulation"]["max_sim_time"])
-        save_compteur = 0
 
         while self.sim_time < max_time and p.isConnected(self.physics_client_id):
+            self._advance_simulation_step(
+                apply_interventions=True,
+                log_main_artifacts=True,
+            )
 
-            # Keyboard button, keys est un dictionnaire
-            keys = p.getKeyboardEvents(physicsClientId = self.physics_client_id)
-
-            # Touche Espace
-            if keys.get(32) == 1:
-                self.is_paused = not self.is_paused
-                print(f"Pause via Clavier : {self.is_paused}")
-            
-            # Appuyer sur q en AZERTY
-            if keys.get(97) == 1:
-                print("Arrêt de la simulation")
-                break
-
-            # Sauvegarder avec s
-            if keys.get(115) == 1:
-                print(f"Sauvegarde {save_compteur} à l'instant t={self.sim_time}s")
-                save_file_path = f"run_{self.config["simulation"]["run_config"]}_save_state_{save_compteur}"
-                # Seulement mettre le nom du fichier
-                self.save_state(save_file_path)
-                save_compteur += 1
-
-            # GUI button pause/play and quit simulation
-            # if self.is_gui_mode:
-            #     pause_click = p.readUserDebugParameter(self.btn_pause, physicsClientId = self.physics_client_id)
-            #     quit_clicks = p.readUserDebugParameter(self.btn_quit, physicsClientId = self.physics_client_id)
-
-            #     if quit_clicks > self.count_quit_click:
-            #         print("\n Button QUIT pressed. Stopping the simulation")
-            #         break
-                
-            #     if pause_click > self.count_pause_clicks:
-            #         self.is_paused = not self.is_paused
-            #         self.count_pause_clicks = pause_click
-            #         etat = "PAUSED" if self.is_paused else "PLAYING"
-            #         print(f"\n Simulation {etat} (t={round(self.sim_time, 2)}s)")
-
-
-            # 1. Mise à jour des essaims (leader/followers) si activés
-            if not self.is_paused:
-                for swarm in self.swarms:
-                    swarm.update()
-
-                # 2. Contrôle de chaque drone
-                for agent in self.agents:
-                    if agent.type=="uav":
-                        agent.think_and_act()
-
-                    elif agent.type=="radar":
-                        if self.sim_time > agent.radar_period + agent.radar_last_time:
-                            agent.radar_last_time = self.sim_time
-                            agent.think_and_act(self.sim_time)
-                # 3. Avancer la physique
-                p.stepSimulation(physicsClientId=self.physics_client_id)
-                self.sim_time += self.dt
-
-
-
-                # 4. Real time
             if self.is_gui_mode:
                 time.sleep(self.dt)
 
+        self._finalize_run_artifacts()
 
-            
+    # ------------------------------------------------------------------
+    def _write_run_summary(self):
+        run_id = int(self.config["simulation"].get("run_config", 0))
+        uavs = [agent for agent in self.agents if isinstance(agent, UAV)]
+        drone_summaries = [agent.get_run_summary() for agent in uavs]
+        crashed_drones = [item for item in drone_summaries if item["crashed"]]
+        first_crash = None
+        timed_crashes = [
+            item for item in crashed_drones if item.get("first_crash_time") is not None
+        ]
+        if timed_crashes:
+            first_crash = min(timed_crashes, key=lambda item: item["first_crash_time"])
+
+        waypoint_summary = {
+            agent.name: [np.array(wp, dtype=float).tolist() for wp in agent.waypoints]
+            for agent in uavs
+        }
+        seed_summary = {
+            "deterministic_execution": self.deterministic_execution,
+            "simulation_seed": self.config.get("simulation", {}).get("seed", None),
+            "effective_seed": self.config.get("simulation", {}).get("effective_seed", None),
+            "random_waypoints_seed": self.config.get("random_waypoints", {}).get("seed", None),
+            "random_waypoints_effective_seed": self.config.get("random_waypoints", {}).get("effective_seed", None),
+            "formation_seeds": {
+                swarm_id: {
+                    "configured_seed": metadata.get("configured_seed", None),
+                    "effective_seed": metadata.get("effective_seed", None),
+                }
+                for swarm_id, metadata in self.formation_run_metadata.items()
+            },
+        }
+
+        summary = {
+            "run": run_id,
+            "max_sim_time": self.config.get("simulation", {}).get("max_sim_time", None),
+            "formation": self.formation_run_metadata,
+            "experiment": self.config.get("experiment", {}),
+            "interventions": [event.as_dict() for event in self.intervention_events],
+            "seeds": seed_summary,
+            "waypoints": waypoint_summary,
+            "motion_profiles": {
+                agent.name: agent.config.get("motion_profile", {})
+                for agent in uavs
+                if agent.config.get("motion_profile", {}).get("enabled", False)
+            },
+            "drones": drone_summaries,
+            "crashed_drones": crashed_drones,
+            "first_crash": first_crash,
+            "relational_ground_truth": {
+                "path": (
+                    str(self.relational_logger.path)
+                    if self.relational_logger is not None
+                    else None
+                ),
+                "rows": (
+                    int(self.relational_logger.rows_written)
+                    if self.relational_logger is not None
+                    else 0
+                ),
+                "matrix_path": (
+                    str(self.relational_logger.matrix_path)
+                    if self.relational_logger is not None
+                    else None
+                ),
+                "matrix_convention": "row=receiver,column=sender,self_pairs_excluded",
+                "counterfactual_deltas": (
+                    "PID command ablation from an identical controller-state snapshot; "
+                    "target/RPM channels are separate from physical contact force"
+                ),
+            },
+            "learning_trace": {
+                "schema_version": (
+                    self.learning_trace_logger.SCHEMA_VERSION
+                    if self.learning_trace_logger is not None
+                    else None
+                ),
+                "path": (
+                    str(self.learning_trace_logger.path)
+                    if self.learning_trace_logger is not None
+                    else None
+                ),
+                "event_catalog_path": (
+                    str(self.learning_trace_logger.event_catalog_path)
+                    if self.learning_trace_logger is not None
+                    else None
+                ),
+                "rows": (
+                    int(self.learning_trace_logger.rows_written)
+                    if self.learning_trace_logger is not None
+                    else 0
+                ),
+                "sampling": "control_update",
+                "intervention_routing": "force is non-zero only on targeted nodes",
+            },
+            "counterfactual_forks": {
+                "enabled": self.counterfactual_forks_enabled,
+                "manifest_path": (
+                    self.counterfactual_fork_manifest_path
+                    if self.counterfactual_forks_enabled
+                    else None
+                ),
+                "count": len(self.counterfactual_fork_records),
+                "rollout_horizon_s": self.counterfactual_fork_horizon,
+                "parent_branch": "baseline_without_interventions",
+            },
+            "system_tracking_error_mean": (
+                float(np.mean([item["tracking_error_mean"] for item in drone_summaries]))
+                if drone_summaries
+                else 0.0
+            ),
+            "system_tracking_error_max": (
+                float(np.max([item["tracking_error_max"] for item in drone_summaries]))
+                if drone_summaries
+                else 0.0
+            ),
+            "system_min_nearest_neighbor_dist": (
+                float(np.min([item["min_nearest_neighbor_dist"] for item in drone_summaries]))
+                if drone_summaries
+                else 100.0
+            ),
+        }
+
+        os.makedirs(self.log_dir, exist_ok=True)
+        path = os.path.join(self.log_dir, f"run_{run_id}_summary.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2)
+        print(f"[Summary] Run summary saved to {path}")
+
+    def _finalize_run_artifacts(self):
+        if self._run_artifacts_finalized:
+            return
+        for agent in self.agents:
+            if agent.type == "uav" and not os.path.exists(agent.log_file):
+                agent.write_csv()
+        if self.relational_logger is not None:
+            self.relational_logger.close()
+        if self.learning_trace_logger is not None:
+            self.learning_trace_logger.close()
+        self._write_run_summary()
+        self._run_artifacts_finalized = True
 
     # ------------------------------------------------------------------
     def stop(self):
-        for agent in self.agents:
-            if agent.type == "uav":
-                if not os.path.exists(agent.log_file):
-                    agent.write_csv()
+        self._finalize_run_artifacts()
 
         for swarm in self.swarms:
-                swarm.cleanup()
+            swarm.cleanup()
+
+        for agent in self.agents:
+            cleanup_network = getattr(agent, "cleanup_network", None)
+            if callable(cleanup_network):
+                cleanup_network()
+
+        if self.network is not None:
+            self.network.stop_proxy()
 
         if p.isConnected(self.physics_client_id):
             print("Déconnexion de PyBullet.")
             p.disconnect(self.physics_client_id)
-
-        self.network.stop_proxy()
 
 
 
         
     # ------------------------------------------------------------------
     def it_stop(self, ind: int):
-
-        for agent in self.agents:
-            if agent.type == "uav":
-                if not os.path.exists(agent.log_file):
-                    agent.write_csv()
+        self._finalize_run_artifacts()
 
         for swarm in self.swarms:
                 swarm.cleanup()
@@ -652,6 +1390,10 @@ class SimulationManager:
     
     def initialisation(self):
         self.sim_time = 0.0
+        self.formation_run_metadata = {}
+        self.relational_logger = None
+        self._last_relational_control_indices = None
+        self._run_artifacts_finalized = False
 
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(
@@ -676,6 +1418,7 @@ class SimulationManager:
 
         # 4. Créer un essaim si demandé dans la config
         self._create_swarm_from_config()
+        self._initialize_relational_logger()
 
 
     def reset(self):
@@ -689,4 +1432,5 @@ class SimulationManager:
         if p.isConnected(self.physics_client_id):
             p.disconnect(self.physics_client_id)
             print("Déconnection de PyBullet")
-        self.network.stop_proxy()
+        if self.network is not None:
+            self.network.stop_proxy()

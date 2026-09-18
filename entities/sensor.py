@@ -38,8 +38,9 @@ class GNSSensor(Sensor):
     - velocity_noise_std : standard deviation of velocity noise (m/s)
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, rng=None):
         super().__init__()
+        self.rng = rng
 
         self.pos_noise_std = float(config.get("position_noise_std", 0.0))
         self.vel_noise_std = float(config.get("velocity_noise_std", 0.0))
@@ -57,8 +58,9 @@ class GNSSensor(Sensor):
         """
         Returns (measured_position, measured_velocity) with Gaussian noise.
         """
-        pos_noise = np.random.normal(0.0, self.pos_noise_std, 3)
-        vel_noise = np.random.normal(0.0, self.vel_noise_std, 3)
+        normal = self.rng.normal if self.rng is not None else np.random.normal
+        pos_noise = normal(0.0, self.pos_noise_std, 3)
+        vel_noise = normal(0.0, self.vel_noise_std, 3)
 
         meas_pos = ground_truth_position + pos_noise
         meas_vel = ground_truth_velocity + vel_noise
@@ -69,7 +71,8 @@ class GNSSensor(Sensor):
 # Dans entities/sensor.py
 
 class IMUSensor:
-    def __init__(self, config_dict=None):
+    def __init__(self, config_dict=None, rng=None):
+        self.rng = rng
         self.last_vel = np.zeros(3)
         self.dt = 1/100 # Supposé
         self.g_vector = np.array([0, 0, 9.81])
@@ -95,7 +98,8 @@ class IMUSensor:
         acc_body = R_world_to_body @ acc_proper_world
         
         # Ajout de bruit (facultatif)
-        acc_body += np.random.normal(0, 0.1, 3) # Bruit blanc
+        normal = self.rng.normal if self.rng is not None else np.random.normal
+        acc_body += normal(0, 0.1, 3) # Bruit blanc
         
         # Gyro (Vitesse angulaire, ici on met 0 ou la vraie pour simplifier)
         gyro_body = np.zeros(3) 

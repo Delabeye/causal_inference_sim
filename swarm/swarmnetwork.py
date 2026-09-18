@@ -49,12 +49,12 @@ class SwarmNetwork:
                     zmq.proxy(frontend, backend)
                     break 
 
+                except zmq.ContextTerminated:
+                    break
                 except zmq.ZMQError:
                     if frontend: frontend.close()
                     if backend: backend.close()
                     continue 
-                except zmq.ContextTerminated:
-                    break
                 except Exception as e:
                     print(f"[Swarm Network] Erreur inattendue : {e}")
                     break
@@ -75,8 +75,11 @@ class SwarmNetwork:
             raise RuntimeError("Le proxy ZMQ n'a trouvé aucun port libre en moins de 5 secondes.")
 
     def stop_proxy(self):
-        if self.proxy_ctx is not None:
-           self.proxy_ctx.term()
+        context = self.proxy_ctx
+        self.proxy_ctx = None
+        if context is not None:
+            context.term()
 
         if self.proxy_thread is not None:
             self.proxy_thread.join(timeout=1.0)
+            self.proxy_thread = None

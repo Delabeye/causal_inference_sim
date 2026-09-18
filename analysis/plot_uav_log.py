@@ -44,6 +44,54 @@ def latest_run(logs_dir: Path) -> int:
     return runs[-1]
 
 
+def parse_run_list(value: str) -> list[int]:
+    runs = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            start_id = int(start)
+            end_id = int(end)
+            step = 1 if end_id >= start_id else -1
+            runs.extend(range(start_id, end_id + step, step))
+        else:
+            runs.append(int(part))
+    return runs
+
+
+def select_runs(
+    logs_dir: Path,
+    run: int | None,
+    runs_arg: str | None,
+    num_runs: int,
+    run_start: int | None,
+) -> list[int]:
+    runs_available = available_runs(logs_dir)
+    if not runs_available:
+        raise FileNotFoundError(f"No run logs found in {logs_dir}")
+
+    if runs_arg:
+        requested = parse_run_list(runs_arg)
+    elif run_start is not None:
+        requested = [run_id for run_id in runs_available if run_id >= run_start][:num_runs]
+    elif run is not None and num_runs > 1:
+        requested = [run_id for run_id in runs_available if run_id >= run][:num_runs]
+    elif run is not None:
+        requested = [run]
+    else:
+        requested = runs_available[-num_runs:]
+
+    existing = set(runs_available)
+    missing = [run_id for run_id in requested if run_id not in existing]
+    if missing:
+        raise FileNotFoundError(
+            f"Run id(s) not found: {missing}. Available runs: {runs_available}"
+        )
+    return requested
+
+
 def to_float(value: str) -> float:
     try:
         return float(value)
@@ -119,26 +167,89 @@ def load_waypoints(config_path: str | None) -> dict[int, list[list[float]]]:
     return waypoints
 
 
-def load_run_waypoints(logs_dir: str, run_id: int) -> dict[int, list[list[float]]]:
-    path = Path(logs_dir) / f"run_{run_id}_waypoints.json"
+def load_run_waypoints(logs_dir: Path, run_id: int) -> dict[int, list[list[float]]]:
+    path = logs_dir / f"run_{run_id}_waypoints.json"
     if not path.exists():
         return {}
 
     with path.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+        payload = json.load(handle) or {}
 
     waypoints = {}
-    for name, wp_list in payload.get("waypoints", {}).items():
+    for name, wp_values in (payload.get("waypoints") or {}).items():
         match = re.search(r"drone_(\d+)$", str(name))
         if not match:
             continue
-        parsed = []
-        for waypoint in wp_list or []:
+
+        wp_list = []
+        for waypoint in wp_values or []:
             if len(waypoint) >= 3:
-                parsed.append([float(waypoint[0]), float(waypoint[1]), float(waypoint[2])])
-        if parsed:
-            waypoints[int(match.group(1))] = parsed
+                wp_list.append([float(waypoint[0]), float(waypoint[1]), float(waypoint[2])])
+        if wp_list:
+            waypoints[int(match.group(1))] = wp_list
+
+    if waypoints:
+        print(f"Loaded run waypoints from {path}")
     return waypoints
+
+
+def slugify(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return value.strip("_") or "unknown"
+
+
+def load_run_formations(logs_dir: Path, run_id: int) -> dict[str, str]:
+    formations = {}
+    for path in sorted(logs_dir.glob(f"run_{run_id}_formation_*.json")):
+        swarm_match = re.match(rf"run_{run_id}_formation_(.+)\.json$", path.name)
+        swarm_id = swarm_match.group(1) if swarm_match else path.stem
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle) or {}
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        formation_type = payload.get("formation_type")
+        if formation_type:
+            formations[str(swarm_id)] = str(formation_type)
+
+    if formations:
+        return formations
+
+    summary_path = logs_dir / f"run_{run_id}_summary.json"
+    if not summary_path.exists():
+        return {}
+
+    try:
+        with summary_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    for swarm_id, metadata in (payload.get("formation") or {}).items():
+        if isinstance(metadata, dict) and metadata.get("formation_type"):
+            formations[str(swarm_id)] = str(metadata["formation_type"])
+    return formations
+
+
+def formation_display_label(formations: dict[str, str]) -> str:
+    if not formations:
+        return "formation unknown"
+    if len(formations) == 1:
+        return next(iter(formations.values()))
+    return ", ".join(f"{swarm_id}:{formation}" for swarm_id, formation in formations.items())
+
+
+def formation_filename_suffix(formations: dict[str, str]) -> str:
+    if not formations:
+        return "formation_unknown"
+    if len(formations) == 1:
+        return slugify(next(iter(formations.values())))
+    return "__".join(
+        f"{slugify(swarm_id)}_{slugify(formation)}"
+        for swarm_id, formation in formations.items()
+    )
 
 
 def world_urdf_from_config(config_path: str | None) -> Path | None:
@@ -366,14 +477,17 @@ def plot_run(
     if config_path is None:
         waypoints_by_drone = {}
     else:
-        waypoints_by_drone = load_run_waypoints(logs_dir, run_id) or load_waypoints(config_path)
+        waypoints_by_drone = load_run_waypoints(logs_path, run_id) or load_waypoints(config_path)
+    formations = load_run_formations(logs_path, run_id)
+    formation_label = formation_display_label(formations)
+    formation_suffix = formation_filename_suffix(formations)
     buildings = load_buildings(config_path, buildings_urdf, building_min_height) if show_buildings else []
-    print(f"Loaded run {run_id}: {len(data)} drone log(s)")
+    print(f"Loaded run {run_id}: {len(data)} drone log(s), formation={formation_label}")
     if buildings:
         print(f"Loaded {len(buildings)} building(s)")
 
     fig = plt.figure(figsize=(16, 10))
-    fig.suptitle(f"UAV trajectories - run {run_id}", fontsize=14)
+    fig.suptitle(f"UAV trajectories - run {run_id} - formation: {formation_label}", fontsize=14)
 
     ax_3d = fig.add_subplot(2, 2, 1, projection="3d")
     ax_xy = fig.add_subplot(2, 2, 2)
@@ -506,7 +620,12 @@ def plot_run(
     fig.tight_layout()
 
     if save:
-        output = Path(save_path) if save_path else Path("analysis") / f"run_{run_id}_trajectories.png"
+        if save_path:
+            output = Path(save_path)
+            if output.suffix == "" or output.is_dir():
+                output = output / f"run_{run_id}_{formation_suffix}_trajectories.png"
+        else:
+            output = Path("analysis") / f"run_{run_id}_{formation_suffix}_trajectories.png"
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, dpi=180)
         print(f"Saved plot to {output}")
@@ -538,9 +657,12 @@ def plot_run(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot all drone trajectories for one run from logs/run_<id>_drone_<id>.csv"
+        description="Plot drone trajectories from logs/run_<id>_drone_<id>.csv"
     )
     parser.add_argument("run", nargs="?", type=int, help="Run id to plot. Defaults to the latest run.")
+    parser.add_argument("--num-runs", type=int, default=1, help="Number of runs to plot. Defaults to 1. Without a run id, plots the latest N runs.")
+    parser.add_argument("--runs", help="Explicit run ids or ranges to plot, e.g. '3,5,8' or '10-14'. Overrides --num-runs.")
+    parser.add_argument("--run-start", type=int, help="First run id to plot when using --num-runs.")
     parser.add_argument("--logs-dir", default="logs", help="Directory containing CSV logs.")
     parser.add_argument("--config", default="config.yaml", help="YAML config used to draw UAV waypoints.")
     parser.add_argument("--no-waypoints", action="store_true", help="Do not draw configured waypoints.")
@@ -548,7 +670,12 @@ def parse_args():
     parser.add_argument("--buildings-urdf", help="Optional URDF path used to draw buildings. Defaults to the world URDF from --config.")
     parser.add_argument("--no-buildings", action="store_true", help="Do not draw buildings from the world URDF.")
     parser.add_argument("--building-min-height", type=float, default=1.0, help="Minimum box height in meters to treat an URDF link as a building.")
-    parser.add_argument("--save", help="Optional output image path, for example analysis/run_40_trajectories.png.")
+    parser.add_argument(
+        "--save",
+        nargs="?",
+        const="analysis",
+        help="Optional output file or directory. With multiple runs, this is treated as a directory. Defaults to analysis/ when used without a value.",
+    )
     parser.add_argument("--no-save", action="store_true", help="Do not save the plot image.")
     parser.add_argument("--no-show", action="store_true", help="Save/compute without opening a plot window.")
     parser.add_argument("--list-runs", action="store_true", help="List available run ids and exit.")
@@ -560,15 +687,38 @@ if __name__ == "__main__":
     if args.list_runs:
         print("Available runs:", " ".join(map(str, available_runs(Path(args.logs_dir)))))
     else:
-        plot_run(
-            run_id=args.run,
-            logs_dir=args.logs_dir,
-            save_path=None if args.no_save else args.save,
-            save=not args.no_save,
-            show=not args.no_show,
-            config_path=None if args.no_waypoints else args.config,
-            waypoint_threshold=args.waypoint_threshold,
-            buildings_urdf=args.buildings_urdf,
-            show_buildings=not args.no_buildings,
-            building_min_height=args.building_min_height,
+        if args.num_runs < 1:
+            raise ValueError("--num-runs must be >= 1")
+
+        run_ids = select_runs(
+            logs_dir=Path(args.logs_dir),
+            run=args.run,
+            runs_arg=args.runs,
+            num_runs=args.num_runs,
+            run_start=args.run_start,
         )
+        print("Plotting runs:", " ".join(map(str, run_ids)))
+
+        multiple_runs = len(run_ids) > 1
+        save_base = Path(args.save) if args.save else None
+        for run_id in run_ids:
+            save_path = None
+            if not args.no_save:
+                if multiple_runs and save_base is not None:
+                    formation_suffix = formation_filename_suffix(load_run_formations(Path(args.logs_dir), run_id))
+                    save_path = str(save_base / f"run_{run_id}_{formation_suffix}_trajectories.png")
+                elif save_base is not None:
+                    save_path = str(save_base)
+
+            plot_run(
+                run_id=run_id,
+                logs_dir=args.logs_dir,
+                save_path=save_path,
+                save=not args.no_save,
+                show=(not args.no_show and not multiple_runs),
+                config_path=None if args.no_waypoints else args.config,
+                waypoint_threshold=args.waypoint_threshold,
+                buildings_urdf=args.buildings_urdf,
+                show_buildings=not args.no_buildings,
+                building_min_height=args.building_min_height,
+            )

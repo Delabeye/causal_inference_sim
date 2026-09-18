@@ -8,8 +8,9 @@ class DrydenGustModel():
     Implémentation du modèle de turbulence Dryden (MIL-F-8785C) robuste.
     Corrigé pour éviter les erreurs de dimension (2D vs 1D) avec scipy.signal.
     """
-    def __init__(self,dt,turbulence_intensity_knots=15,mean_wind=[0,0,0]):
+    def __init__(self,dt,turbulence_intensity_knots=15,mean_wind=[0,0,0],rng=None):
         self.dt = float(dt)
+        self.rng = rng
         self.turbulence_level = float(turbulence_intensity_knots)
         self.mean_wind = mean_wind 
         # États internes (Memory) pour les filtres (u, v, w)
@@ -108,7 +109,8 @@ class DrydenGustModel():
             self._update_filters(h, V)
 
         # Bruit blanc (entrée du filtre)
-        noise = np.random.normal(0, 1, 3)
+        normal = self.rng.normal if self.rng is not None else np.random.normal
+        noise = normal(0, 1, 3)
 
         # Filtrage
         # On unpack b et a qui sont maintenant garantis d'être des vecteurs 1D

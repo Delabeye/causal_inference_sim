@@ -107,7 +107,16 @@ class HeightmapAStar:
         print("Heightmap générée avec succès.")
         
 
-    def compute_repulsive_force(self, current_pos, safety_radius, max_force, swarm_active, leader, swarm_pos):
+    def compute_repulsive_force(
+        self,
+        current_pos,
+        safety_radius,
+        max_force,
+        swarm_active,
+        leader,
+        swarm_pos,
+        normalize=True,
+    ):
         force_vec = np.array([0.0, 0.0, 0.0])
         k_obs = 0.5
         rows, cols = self.h_map.shape
@@ -206,7 +215,7 @@ class HeightmapAStar:
 
         # Normalisation finale
         total_norm = np.linalg.norm(force_vec)
-        if total_norm > max_force:
+        if normalize and total_norm > max_force:
             force_vec = (force_vec / total_norm) * max_force
 
         return force_vec

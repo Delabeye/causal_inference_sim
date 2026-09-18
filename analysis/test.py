@@ -120,6 +120,17 @@ def load_swarm_logs(log_dir: str, downsample: int = 1) -> SwarmLogs:
         if "time" not in df.columns:
             raise ValueError(f"Colonne 'time' absente dans {p}. Colonnes: {list(df.columns)}")
         df = df.copy()
+        optional_defaults = {
+            "crash_flag": 0.0,
+            "formation_error_mag": 0.0,
+            "intervention_active": 0.0,
+            "external_force_x": 0.0,
+            "external_force_y": 0.0,
+            "external_force_z": 0.0,
+        }
+        for col, default in optional_defaults.items():
+            if col not in df.columns:
+                df[col] = default
         df.sort_values("time", inplace=True)
         if downsample > 1:
             df = df.iloc[::downsample].reset_index(drop=True)
@@ -216,6 +227,10 @@ def load_swarm_logs(log_dir: str, downsample: int = 1) -> SwarmLogs:
     data["target_pos"] = stack_cols(["target_x", "target_y", "target_z"])
     data["tracking_error_mag"] = stack_col("tracking_error_mag")
     data["collision_flag_log"] = stack_col("collision_flag")  # from pybullet contact points
+    data["crash_flag_log"] = stack_col("crash_flag")
+    data["formation_error_log"] = stack_col("formation_error_mag")
+    data["intervention_active"] = stack_col("intervention_active")
+    data["external_force"] = stack_cols(["external_force_x", "external_force_y", "external_force_z"])
 
     return SwarmLogs(times=aligned_time, drone_names=names, data=data, dt=dt)
 
@@ -257,6 +272,9 @@ def detect_failures(
     gnss_quantile: float = 0.95,
     wind_quantile: float = 0.95,
     suboptimal_quantile: float = 0.95,
+    gnss_abs_floor: float = 0.75,
+    wind_abs_floor: float = 0.5,
+    suboptimal_abs_floor: float = 3.0,
     min_persist_steps: int = 5,
 ) -> FailureLabels:
     """
@@ -264,9 +282,9 @@ def detect_failures(
     - collision: min distance inter-drones < collision_dist
     - formation_loss: écart à la formation de référence > formation_thresh
       (référence = offsets initiaux par rapport au leader)
-    - gnss_degradation: gnss_error_mag > quantile (par drone)
-    - wind_loss: wind_mag > quantile ET dérivée de tracking_error positive
-    - suboptimal_traj: tracking_error_mag > quantile (persistant)
+    - gnss_degradation: gnss_error_mag > max(quantile, seuil physique)
+    - wind_loss: wind_mag > max(quantile, seuil physique) ET dérivée de tracking_error positive
+    - suboptimal_traj: tracking_error_mag > max(quantile, seuil physique) (persistant)
     """
     pos = logs.data["gt_pos"][run_idx]  # [T,N,3]
     vel = logs.data["gt_vel"][run_idx]
@@ -283,7 +301,13 @@ def detect_failures(
         np.fill_diagonal(dists[t], np.inf)
     min_dist = np.min(dists, axis=-1)  # [T,N]
 
-    collision = (min_dist < collision_dist).astype(np.int32)
+    distance_collision = min_dist < collision_dist
+    collision_logs = logs.data.get("collision_flag_log", None)
+    if collision_logs is None:
+        contact_collision = np.zeros_like(min_dist, dtype=bool)
+    else:
+        contact_collision = collision_logs[run_idx] > 0.5
+    collision = (distance_collision | contact_collision).astype(np.int32)
 
     # Formation error relative to leader, reference = initial offsets
     leader_pos0 = pos[0, leader_index].copy()
@@ -295,18 +319,18 @@ def detect_failures(
 
     formation_loss = (formation_error > formation_thresh).astype(np.int32)
 
-    # GNSS degradation per drone quantile
-    gnss_thr = np.quantile(gnss_err, gnss_quantile, axis=0)  # [N]
+    # GNSS degradation: hybrid threshold avoids forcing failures in normal runs.
+    gnss_thr = np.maximum(gnss_abs_floor, np.quantile(gnss_err, gnss_quantile, axis=0))  # [N]
     gnss_degradation = (gnss_err > gnss_thr[None, :]).astype(np.int32)
 
     # Wind loss: high wind + tracking error increasing sharply
-    wind_thr = np.quantile(wind_mag, wind_quantile, axis=0)
+    wind_thr = np.maximum(wind_abs_floor, np.quantile(wind_mag, wind_quantile, axis=0))
     d_track = np.zeros_like(track_err)
     d_track[1:] = (track_err[1:] - track_err[:-1]) / max(logs.dt, 1e-6)
     wind_loss = ((wind_mag > wind_thr[None, :]) & (d_track > 0.5)).astype(np.int32)  # 0.5 m/s as default slope
 
     # Suboptimal trajectory: high tracking error persistent
-    sub_thr = np.quantile(track_err, suboptimal_quantile, axis=0)
+    sub_thr = np.maximum(suboptimal_abs_floor, np.quantile(track_err, suboptimal_quantile, axis=0))
     suboptimal = (track_err > sub_thr[None, :]).astype(np.int32)
     # persistence: require min_persist_steps consecutive 1s
     if min_persist_steps > 1:
